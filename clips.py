@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Fetch NBA highlight clips and render Moment's filtered variants.
 
-  python3 pipeline/clips.py scout <url>     frames every second, to pick start/end
-  python3 pipeline/clips.py build [id ...]  fetch, normalize, filter, verify
+  python3 pipeline/clips.py scout <url>                         frames every second, to pick start/end
+  python3 pipeline/clips.py build [--manifest FILE] [id ...]    fetch, normalize, filter, verify
+
+The manifest defaults to fixtures/clips.json, the public sample clips. Real puzzles keep theirs outside the repo.
 
 Needs yt-dlp and ffmpeg on PATH. Output goes to media/, which is git-ignored.
 """
@@ -20,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ROOT / "pipeline" / "clips.json"
+SAMPLE_MANIFEST = ROOT / "fixtures" / "clips.json"
 MEDIA = ROOT / "media"
 
 HEIGHT = 720
@@ -82,8 +84,10 @@ def parse_crop(raw: dict) -> Crop:
     return Crop(width=int(raw["size"][0]), height=int(raw["size"][1]), path=path)
 
 
-def load_manifest() -> list[Clip]:
-    raw = json.loads(MANIFEST.read_text())
+def load_manifest(path: Path) -> list[Clip]:
+    if not path.is_file():
+        sys.exit(f"no manifest at {path}")
+    raw = json.loads(path.read_text())
     clips = []
     for i, entry in enumerate(raw):
         try:
@@ -94,13 +98,13 @@ def load_manifest() -> list[Clip]:
                 "track": json.dumps(entry["track"], sort_keys=True) if "track" in entry else None,
             })
         except TypeError as e:
-            sys.exit(f"clips.json entry {i}: {e}")
+            sys.exit(f"{path.name} entry {i}: {e}")
         if not 0 <= clip.start < clip.end:
             sys.exit(f"{clip.id}: start must be >= 0 and before end")
         clips.append(clip)
     ids = [c.id for c in clips]
     if len(ids) != len(set(ids)):
-        sys.exit("clips.json has duplicate ids")
+        sys.exit(f"{path.name} has duplicate ids")
     return clips
 
 
@@ -263,13 +267,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("scout").add_argument("url")
-    sub.add_parser("build").add_argument("ids", nargs="*")
+    build_cmd = sub.add_parser("build")
+    build_cmd.add_argument("--manifest", type=Path, default=SAMPLE_MANIFEST)
+    build_cmd.add_argument("ids", nargs="*")
     args = parser.parse_args()
 
     if args.command == "scout":
         scout(args.url)
         return
-    clips = load_manifest()
+    clips = load_manifest(args.manifest)
     if args.ids:
         unknown = set(args.ids) - {c.id for c in clips}
         if unknown:
