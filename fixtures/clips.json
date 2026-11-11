@@ -1,0 +1,20 @@
+[
+  {
+    "id": "ray-allen-2013-finals-g6-corner-three",
+    "player": "Ray Allen",
+    "title": "Game-tying corner three, 2013 Finals Game 6",
+    "url": "https://www.youtube.com/watch?v=tr6XsZVb-ZE",
+    "start": 10.5,
+    "end": 15.5,
+    "hide": [[272, 570, 650, 84]],
+    "crop": {"size": [800, 450], "path": [[0, 400, 150], [3.5, 450, 200], [5, 480, 170]]}
+  },
+  {
+    "id": "ray-allen-2013-finals-g6-corner-three-replay",
+    "player": "Ray Allen",
+    "title": "Game-tying corner three, 2013 Finals Game 6 (baseline replay)",
+    "url": "https://www.youtube.com/watch?v=tr6XsZVb-ZE",
+    "start": 51.5,
+    "end": 55
+  }
+]
