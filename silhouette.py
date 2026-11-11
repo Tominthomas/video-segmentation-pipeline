@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 COLORS = {"player": (255, 255, 255), "ball": (255, 122, 26), "hoop": (150, 150, 150)}
 ASPECT = 16 / 9
@@ -19,6 +19,10 @@ PAD = 1.25
 SMOOTH_FRAMES = 15
 # Zooming out reads better slower than panning, so the window size eases over a longer stretch.
 ZOOM_SMOOTH_FRAMES = 25
+# SAM's masks are blocky once scaled up, so each one is resized smoothly, softened by this blur radius at
+# output size, then cut with a narrow ramp so edges come out curved and anti-aliased instead of stepped.
+EDGE_BLUR = 2.0
+EDGE_RAMP = 0.12
 # How close, in 720p pixels, the ball must be to a player's box to count as theirs.
 HOLD_DISTANCE = 30
 
@@ -146,16 +150,26 @@ def windows(kinds: list[str], masks: np.ndarray, render: dict) -> tuple[tuple[in
     return (out_w, int(out_w / ASPECT)), glide(targets, w, h)
 
 
+def smooth_edges(mask: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """A 0..1 coverage map of the mask at output size, with smooth anti-aliased edges."""
+    if not mask.any():
+        return np.zeros((size[1], size[0]), dtype=np.float32)
+    soft = Image.fromarray(mask.astype(np.uint8) * 255).resize(size, Image.BILINEAR)
+    soft = np.asarray(soft.filter(ImageFilter.GaussianBlur(EDGE_BLUR)), dtype=np.float32) / 255
+    return np.clip((soft - 0.5) / EDGE_RAMP + 0.5, 0, 1)
+
+
 def main() -> None:
     masks_path, render_path, out_dir = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     kinds, masks = load(masks_path)
     size, crops = windows(kinds, masks, json.loads(render_path.read_text()))
     out_dir.mkdir(parents=True, exist_ok=True)
     for frame, (x, y, cw, ch) in enumerate(crops):
-        canvas = np.zeros((ch, cw, 3), dtype=np.uint8)
+        canvas = np.zeros((size[1], size[0], 3), dtype=np.float32)
         for i, kind in enumerate(kinds):
-            canvas[masks[frame, i, y:y + ch, x:x + cw]] = COLORS[kind]
-        Image.fromarray(canvas).resize(size, Image.BILINEAR).save(out_dir / f"{frame:05d}.png")
+            alpha = smooth_edges(masks[frame, i, y:y + ch, x:x + cw], size)
+            canvas += (np.asarray(COLORS[kind], dtype=np.float32) - canvas) * alpha[..., None]
+        Image.fromarray(canvas.round().astype(np.uint8)).save(out_dir / f"{frame:05d}.png")
 
 
 if __name__ == "__main__":
