@@ -60,7 +60,7 @@ def glide(targets: list[tuple[float, float, float] | None], frame_w: int, frame_
     for t in targets:
         last = t or last
         filled.append(last)
-    cx, cy, width = (np.asarray(col, dtype=float) for col in zip(*filled))
+    cx, cy, width = (np.asarray(col, dtype=float) for col in zip(*filled, strict=False))
     width = np.minimum(smooth(width, ZOOM_SMOOTH_FRAMES), min(frame_w, frame_h * ASPECT))
     height = width / ASPECT
     x = np.clip(smooth(cx, SMOOTH_FRAMES) - width / 2, 0, frame_w - width)
@@ -98,7 +98,10 @@ def holders(kinds: list[str], masks: np.ndarray) -> tuple[list[int | None], int 
     for frame, b in enumerate(ball):
         if b and hoop[frame] and shooter is None:
             h, (bx, by) = hoop[frame], ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
-            if h[0] - HOLD_DISTANCE <= bx <= h[2] + HOLD_DISTANCE and h[1] - HOLD_DISTANCE <= by <= h[3] + HOLD_DISTANCE:
+            if (
+                h[0] - HOLD_DISTANCE <= bx <= h[2] + HOLD_DISTANCE
+                and h[1] - HOLD_DISTANCE <= by <= h[3] + HOLD_DISTANCE
+            ):
                 shooter, release = last_holder, frame
                 # Re-point the flight frames before the rim at the shooter too, so the hold starts at release.
                 while release > 0 and result[release - 1] is None:
@@ -111,7 +114,7 @@ def holders(kinds: list[str], masks: np.ndarray) -> tuple[list[int | None], int 
         if b:
             bx, by = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
             for i in players:
-                box = boxes_of(masks[frame:frame + 1, [i]])[0]
+                box = boxes_of(masks[frame : frame + 1, [i]])[0]
                 if box:
                     gaps[i] = max(box[0] - bx, 0, bx - box[2]) + max(box[1] - by, 0, by - box[3])
         if current not in gaps or gaps[current] > HOLD_DISTANCE:
@@ -125,7 +128,10 @@ def holders(kinds: list[str], masks: np.ndarray) -> tuple[list[int | None], int 
 def windows(kinds: list[str], masks: np.ndarray, render: dict) -> tuple[tuple[int, int], np.ndarray]:
     """The output size and each frame's (x, y, width, height) crop, per the render's follow mode."""
     _, _, h, w = masks.shape
-    of_kind = lambda wanted: [i for i, k in enumerate(kinds) if k in wanted]
+
+    def of_kind(wanted):
+        return [i for i, k in enumerate(kinds) if k in wanted]
+
     follow = render.get("follow", "action")
     if follow == "action":
         boxes = boxes_of(masks[:, of_kind({"player", "hoop"})])
@@ -141,7 +147,7 @@ def windows(kinds: list[str], masks: np.ndarray, render: dict) -> tuple[tuple[in
             hoop = boxes_of(masks[:, of_kind({"hoop"})])
             targets = []
             for frame, i in enumerate(held):
-                box = boxes_of(masks[frame:frame + 1, [i]])[0] if i is not None else None
+                box = boxes_of(masks[frame : frame + 1, [i]])[0] if i is not None else None
                 if release is not None and frame >= release:
                     box = union(box, hoop[frame])
                     targets.append((*center(box), max(out_w, fit_width(box))) if box else None)
@@ -167,7 +173,7 @@ def main() -> None:
     for frame, (x, y, cw, ch) in enumerate(crops):
         canvas = np.zeros((size[1], size[0], 3), dtype=np.float32)
         for i, kind in enumerate(kinds):
-            alpha = smooth_edges(masks[frame, i, y:y + ch, x:x + cw], size)
+            alpha = smooth_edges(masks[frame, i, y : y + ch, x : x + cw], size)
             canvas += (np.asarray(COLORS[kind], dtype=np.float32) - canvas) * alpha[..., None]
         Image.fromarray(canvas.round().astype(np.uint8)).save(out_dir / f"{frame:05d}.png")
 

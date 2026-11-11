@@ -28,11 +28,15 @@ def track(frames_dir: Path, spec: dict) -> np.ndarray:
         for obj_id, obj in enumerate(spec["objects"]):
             keep, avoid = obj["points"], obj.get("avoid", [])
             predictor.add_new_points_or_box(
-                state, frame_idx=obj.get("frame", spec["frame"]), obj_id=obj_id,
+                state,
+                frame_idx=obj.get("frame", spec["frame"]),
+                obj_id=obj_id,
                 points=np.asarray(keep + avoid, dtype=np.float32),
-                labels=np.asarray([1] * len(keep) + [0] * len(avoid), dtype=np.int32))
-        masks = np.zeros((state["num_frames"], len(spec["objects"]), state["video_height"], state["video_width"]),
-                         dtype=bool)
+                labels=np.asarray([1] * len(keep) + [0] * len(avoid), dtype=np.int32),
+            )
+        masks = np.zeros(
+            (state["num_frames"], len(spec["objects"]), state["video_height"], state["video_width"]), dtype=bool
+        )
         for reverse in (False, True):
             for frame, obj_ids, logits in predictor.propagate_in_video(state, reverse=reverse):
                 for i, obj_id in enumerate(obj_ids):
@@ -44,11 +48,13 @@ def main() -> None:
     clip, spec_path, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     spec = json.loads(spec_path.read_text())
     with tempfile.TemporaryDirectory() as tmp:
-        subprocess.run(["ffmpeg", "-v", "error", "-i", str(clip), "-q:v", "2", "-start_number", "0",
-                        str(Path(tmp) / "%05d.jpg")], check=True)
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(clip), "-q:v", "2", "-start_number", "0", str(Path(tmp) / "%05d.jpg")],
+            check=True,
+        )
         masks = track(Path(tmp), spec)
     kinds = [obj["kind"] for obj in spec["objects"]]
-    for kind, share in zip(kinds, masks.reshape(*masks.shape[:2], -1).any(axis=2).mean(axis=0)):
+    for kind, share in zip(kinds, masks.reshape(*masks.shape[:2], -1).any(axis=2).mean(axis=0), strict=False):
         print(f"  {kind}: visible in {share:.0%} of frames")
     np.savez_compressed(out, bits=np.packbits(masks, axis=-1), shape=np.asarray(masks.shape), kinds=np.asarray(kinds))
 

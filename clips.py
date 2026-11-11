@@ -28,8 +28,22 @@ MEDIA = ROOT / "media"
 HEIGHT = 720
 FPS = 30
 ENCODE = [
-    "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
-    "-g", str(FPS // 2), "-movflags", "+faststart", "-map_metadata", "-1", "-map_chapters", "-1",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "medium",
+    "-crf",
+    "20",
+    "-pix_fmt",
+    "yuv420p",
+    "-g",
+    str(FPS // 2),
+    "-movflags",
+    "+faststart",
+    "-map_metadata",
+    "-1",
+    "-map_chapters",
+    "-1",
 ]
 
 # Each clue variant hides faces and jersey text with one whole-frame look.
@@ -56,9 +70,10 @@ class Crop:
         def along(axis: int) -> str:
             points = [(t, pos[axis]) for t, *pos in self.path]
             expr = str(points[-1][1])
-            for (t0, v0), (t1, v1) in reversed(list(zip(points, points[1:]))):
+            for (t0, v0), (t1, v1) in reversed(list(zip(points, points[1:], strict=False))):
                 expr = f"if(lt(t\\,{t1})\\,{v0}+({v1}-{v0})*(t-{t0})/{t1 - t0}\\,{expr})"
             return f"if(lt(t\\,{points[0][0]})\\,{points[0][1]}\\,{expr})"
+
         return f"crop={self.width}:{self.height}:{along(0)}:{along(1)},scale=-2:{HEIGHT}"
 
 
@@ -75,7 +90,6 @@ class Clip:
     track: str | None = None
 
 
-
 def parse_crop(raw: dict) -> Crop:
     path = tuple(sorted((float(t), int(x), int(y)) for t, x, y in raw["path"]))
     if not path:
@@ -90,12 +104,14 @@ def load_manifest(path: Path) -> list[Clip]:
     clips = []
     for i, entry in enumerate(raw):
         try:
-            clip = Clip(**{
-                **entry,
-                "hide": tuple(tuple(box) for box in entry.get("hide", [])),
-                "crop": parse_crop(entry["crop"]) if "crop" in entry else None,
-                "track": json.dumps(entry["track"], sort_keys=True) if "track" in entry else None,
-            })
+            clip = Clip(
+                **{
+                    **entry,
+                    "hide": tuple(tuple(box) for box in entry.get("hide", [])),
+                    "crop": parse_crop(entry["crop"]) if "crop" in entry else None,
+                    "track": json.dumps(entry["track"], sort_keys=True) if "track" in entry else None,
+                }
+            )
         except TypeError as e:
             sys.exit(f"{path.name} entry {i}: {e}")
         if (clip.start is None) != (clip.end is None):
@@ -118,13 +134,18 @@ def run(cmd: list[str]) -> None:
 def probe(path: Path) -> dict:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     return json.loads(out)
 
 
 class Artifacts:
-    """Rebuilds an output only when its recipe changed, writing through a temp file so a crash never leaves a half-written artifact."""
+    """Rebuilds an output only when its recipe changed.
+
+    It writes through a temp file so a crash never leaves a half-written artifact.
+    """
 
     def __init__(self, folder: Path):
         self.folder = folder
@@ -147,13 +168,25 @@ class Artifacts:
 
 
 def fetch(clip: Clip, out: Path) -> None:
-    window = [] if clip.start is None else [
-        "--download-sections", f"*{clip.start}-{clip.end}", "--force-keyframes-at-cuts"]
-    run([
-        "yt-dlp", "--quiet", "--no-warnings", "--no-playlist",
-        "-f", "bv*[height<=1080]+ba/b[height<=1080]", *window,
-        "--merge-output-format", "mp4", "-o", str(out), clip.url,
-    ])
+    window = (
+        [] if clip.start is None else ["--download-sections", f"*{clip.start}-{clip.end}", "--force-keyframes-at-cuts"]
+    )
+    run(
+        [
+            "yt-dlp",
+            "--quiet",
+            "--no-warnings",
+            "--no-playlist",
+            "-f",
+            "bv*[height<=1080]+ba/b[height<=1080]",
+            *window,
+            "--merge-output-format",
+            "mp4",
+            "-o",
+            str(out),
+            clip.url,
+        ]
+    )
 
 
 def encode(src: Path, out: Path, vf: str, audio: bool) -> None:
@@ -173,8 +206,25 @@ def silhouette(clip: Clip, masks: Path, render: dict, out: Path) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         frames = Path(tmp) / "frames"
         venv_step(clip, SILHOUETTE, masks, render, frames)
-        run(["ffmpeg", "-y", "-v", "error", "-framerate", str(FPS), "-i", str(frames / "%05d.png"),
-             "-vf", f"scale=-2:{HEIGHT}", *ENCODE, "-an", "-f", "mp4", str(out)])
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                "-v",
+                "error",
+                "-framerate",
+                str(FPS),
+                "-i",
+                str(frames / "%05d.png"),
+                "-vf",
+                f"scale=-2:{HEIGHT}",
+                *ENCODE,
+                "-an",
+                "-f",
+                "mp4",
+                str(out),
+            ]
+        )
 
 
 def contact_sheet(variants: list[Path], out: Path, duration: float) -> None:
@@ -217,27 +267,43 @@ def build(clips: list[Clip]) -> bool:
         source = art.make("source.mp4", [clip.url, clip.start, clip.end], lambda out: fetch(clip, out))
         expected = clip.end - clip.start if clip.start is not None else float(probe(source)["format"]["duration"])
         scale = f"scale=-2:{HEIGHT},fps={FPS}"
-        outputs = {"clip.mp4": art.make("clip.mp4", ["clip", scale, ENCODE, art.ledger["source.mp4"]],
-                                        lambda out: encode(source, out, scale, audio=True))}
+        outputs = {
+            "clip.mp4": art.make(
+                "clip.mp4",
+                ["clip", scale, ENCODE, art.ledger["source.mp4"]],
+                lambda out: encode(source, out, scale, audio=True),
+            )
+        }
         # Score bugs and on-screen text name the teams, so clue variants black them out first.
         # Crop zooms the clue onto the shooter, which also drops court logos; the reveal clip stays full frame.
         boxes = "".join(f",drawbox=x={x}:y={y}:w={w}:h={h}:color=black:t=fill" for x, y, w, h in clip.hide)
         zoom = f",{clip.crop.filter()}" if clip.crop else ""
         for name, vf in FILTERS.items():
             chain = f"{scale}{boxes}{zoom},{vf}"
-            outputs[f"{name}.mp4"] = art.make(f"{name}.mp4", [chain, ENCODE, art.ledger["source.mp4"]],
-                                              lambda out, chain=chain: encode(source, out, chain, audio=False))
+            outputs[f"{name}.mp4"] = art.make(
+                f"{name}.mp4",
+                [chain, ENCODE, art.ledger["source.mp4"]],
+                lambda out, chain=chain: encode(source, out, chain, audio=False),
+            )
         if clip.track:
             spec = json.loads(clip.track)
             tracking = {k: spec[k] for k in TRACK_KEYS}
             render = {k: v for k, v in spec.items() if k not in TRACK_KEYS}
-            masks = art.make("masks.npz", [tracking, TRACK.read_text(), art.ledger["clip.mp4"]],
-                             lambda out: venv_step(clip, TRACK, outputs["clip.mp4"], tracking, out))
+            masks = art.make(
+                "masks.npz",
+                [tracking, TRACK.read_text(), art.ledger["clip.mp4"]],
+                lambda out: venv_step(clip, TRACK, outputs["clip.mp4"], tracking, out),
+            )
             outputs["silhouette.mp4"] = art.make(
-                "silhouette.mp4", [render, SILHOUETTE.read_text(), ENCODE, art.ledger["masks.npz"]],
-                lambda out: silhouette(clip, masks, render, out))
-        art.make("contact.png", [list(FILTERS), [art.ledger[n] for n in outputs]],
-                 lambda out: contact_sheet(list(outputs.values()), out, expected))
+                "silhouette.mp4",
+                [render, SILHOUETTE.read_text(), ENCODE, art.ledger["masks.npz"]],
+                lambda out: silhouette(clip, masks, render, out),
+            )
+        art.make(
+            "contact.png",
+            [list(FILTERS), [art.ledger[n] for n in outputs]],
+            lambda out: contact_sheet(list(outputs.values()), out, expected),
+        )
         problems = verify(outputs, expected)
         for p in problems:
             print(f"  FAIL {p}")
@@ -248,8 +314,9 @@ def build(clips: list[Clip]) -> bool:
 
 
 def scout(url: str) -> None:
-    video_id = subprocess.run(["yt-dlp", "--no-warnings", "--print", "id", url],
-                              capture_output=True, text=True, check=True).stdout.strip()
+    video_id = subprocess.run(
+        ["yt-dlp", "--no-warnings", "--print", "id", url], capture_output=True, text=True, check=True
+    ).stdout.strip()
     folder = MEDIA / "scout" / video_id
     frames = folder / "frames"
     if frames.exists():
@@ -258,19 +325,44 @@ def scout(url: str) -> None:
     video = folder / "video.mp4"
     if not video.exists():
         tmp = folder / ".tmp-video.mp4"
-        run(["yt-dlp", "--quiet", "--no-warnings", "--no-playlist", "-f", "bv*[height<=480]+ba/b[height<=480]",
-             "--merge-output-format", "mp4", "-o", str(tmp), url])
+        run(
+            [
+                "yt-dlp",
+                "--quiet",
+                "--no-warnings",
+                "--no-playlist",
+                "-f",
+                "bv*[height<=480]+ba/b[height<=480]",
+                "--merge-output-format",
+                "mp4",
+                "-o",
+                str(tmp),
+                url,
+            ]
+        )
         os.replace(tmp, video)
-    run(["ffmpeg", "-v", "error", "-i", str(video), "-vf", "fps=1,scale=320:-2", "-start_number", "0",
-         str(frames / "%04d.jpg")])
+    run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(video),
+            "-vf",
+            "fps=1,scale=320:-2",
+            "-start_number",
+            "0",
+            str(frames / "%04d.jpg"),
+        ]
+    )
     cells = "".join(
-        f'<figure><img src="{f}"><figcaption>{int(f.stem)}s</figcaption></figure>'
-        for f in sorted(frames.glob("*.jpg"))
+        f'<figure><img src="{f}"><figcaption>{int(f.stem)}s</figcaption></figure>' for f in sorted(frames.glob("*.jpg"))
     )
     sheet = folder / "sheet.html"
     sheet.write_text(
         f"<!doctype html><meta charset=utf-8><title>{html.escape(video_id)}</title>"
-        "<style>body{font:13px system-ui;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px}"
+        "<style>body{font:13px system-ui;display:grid;"
+        "grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px}"
         "figure{margin:0}img{width:100%;display:block}</style>" + cells
     )
     print(f"{len(list(frames.glob('*.jpg')))} frames, one per second: {sheet}")
