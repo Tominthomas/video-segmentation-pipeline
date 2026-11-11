@@ -66,15 +66,12 @@ class Clip:
     player: str
     title: str
     url: str
-    start: float
-    end: float
+    start: float | None = None
+    end: float | None = None
     hide: tuple[tuple[int, int, int, int], ...] = ()
     crop: Crop | None = None
     track: str | None = None
 
-    @property
-    def duration(self) -> float:
-        return self.end - self.start
 
 
 def parse_crop(raw: dict) -> Crop:
@@ -99,7 +96,9 @@ def load_manifest(path: Path) -> list[Clip]:
             })
         except TypeError as e:
             sys.exit(f"{path.name} entry {i}: {e}")
-        if not 0 <= clip.start < clip.end:
+        if (clip.start is None) != (clip.end is None):
+            sys.exit(f"{clip.id}: give both start and end, or neither for the whole video")
+        if clip.start is not None and not 0 <= clip.start < clip.end:
             sys.exit(f"{clip.id}: start must be >= 0 and before end")
         clips.append(clip)
     ids = [c.id for c in clips]
@@ -146,10 +145,11 @@ class Artifacts:
 
 
 def fetch(clip: Clip, out: Path) -> None:
+    window = [] if clip.start is None else [
+        "--download-sections", f"*{clip.start}-{clip.end}", "--force-keyframes-at-cuts"]
     run([
         "yt-dlp", "--quiet", "--no-warnings", "--no-playlist",
-        "-f", "bv*[height<=1080]+ba/b[height<=1080]",
-        "--download-sections", f"*{clip.start}-{clip.end}", "--force-keyframes-at-cuts",
+        "-f", "bv*[height<=1080]+ba/b[height<=1080]", *window,
         "--merge-output-format", "mp4", "-o", str(out), clip.url,
     ])
 
@@ -181,7 +181,7 @@ def contact_sheet(variants: list[Path], out: Path, duration: float) -> None:
     run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", graph, "-frames:v", "1", "-f", "image2", str(out)])
 
 
-def verify(clip: Clip, outputs: dict[str, Path]) -> list[str]:
+def verify(outputs: dict[str, Path], expected: float) -> list[str]:
     problems = []
     for name, path in outputs.items():
         info = probe(path)
@@ -191,8 +191,8 @@ def verify(clip: Clip, outputs: dict[str, Path]) -> list[str]:
         tags = info["format"].get("tags", {})
         if len(video) != 1 or video[0]["height"] != HEIGHT:
             problems.append(f"{name}: expected one {HEIGHT}p video stream")
-        if abs(duration - clip.duration) > 0.25:
-            problems.append(f"{name}: duration {duration:.2f}s, manifest says {clip.duration:.2f}s")
+        if abs(duration - expected) > 0.25:
+            problems.append(f"{name}: duration {duration:.2f}s, expected {expected:.2f}s")
         if name != "clip.mp4" and audio:
             problems.append(f"{name}: clue variants must have no audio")
         if any(k.lower() in ("title", "comment", "description", "artist") for k in tags):
@@ -208,6 +208,7 @@ def build(clips: list[Clip]) -> bool:
         folder.mkdir(parents=True, exist_ok=True)
         art = Artifacts(folder)
         source = art.make("source.mp4", [clip.url, clip.start, clip.end], lambda out: fetch(clip, out))
+        expected = clip.end - clip.start if clip.start is not None else float(probe(source)["format"]["duration"])
         scale = f"scale=-2:{HEIGHT},fps={FPS}"
         outputs = {"clip.mp4": art.make("clip.mp4", ["clip", scale, ENCODE, art.ledger["source.mp4"]],
                                         lambda out: encode(source, out, scale, audio=True))}
@@ -224,8 +225,8 @@ def build(clips: list[Clip]) -> bool:
                 "silhouette.mp4", [clip.track, SEGMENT.read_text(), ENCODE, art.ledger["clip.mp4"]],
                 lambda out: silhouette(clip, outputs["clip.mp4"], out))
         art.make("contact.png", [list(FILTERS), [art.ledger[n] for n in outputs]],
-                 lambda out: contact_sheet(list(outputs.values()), out, clip.duration))
-        problems = verify(clip, outputs)
+                 lambda out: contact_sheet(list(outputs.values()), out, expected))
+        problems = verify(outputs, expected)
         for p in problems:
             print(f"  FAIL {p}")
         if not problems:
