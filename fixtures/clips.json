@@ -15,6 +15,16 @@
     "title": "Game-tying corner three, 2013 Finals Game 6 (baseline replay)",
     "url": "https://www.youtube.com/watch?v=tr6XsZVb-ZE",
     "start": 51.5,
-    "end": 55
+    "end": 55,
+    "track": {
+      "frame": 0,
+      "objects": [
+        {"kind": "player", "points": [[965, 430], [975, 560]]},
+        {"kind": "player", "points": [[180, 520]]},
+        {"kind": "player", "points": [[600, 500]]},
+        {"kind": "ball", "points": [[750, 25]]},
+        {"kind": "hoop", "frame": 30, "points": [[185, 305], [215, 255]]}
+      ]
+    }
   }
 ]
