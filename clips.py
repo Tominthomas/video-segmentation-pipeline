@@ -35,7 +35,9 @@ ENCODE = [
 # Each clue variant hides faces and jersey text with one whole-frame look.
 # The blur runs before recoloring so small digits smear instead of turning into crisp edges.
 VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
-SEGMENT = ROOT / "pipeline" / "segment.py"
+TRACK = ROOT / "pipeline" / "track.py"
+SILHOUETTE = ROOT / "pipeline" / "silhouette.py"
+TRACK_KEYS = ("frame", "objects")
 
 FILTERS = {
     "thermal": "format=gray,gblur=sigma=4,format=yuv420p,pseudocolor=p=inferno",
@@ -159,13 +161,18 @@ def encode(src: Path, out: Path, vf: str, audio: bool) -> None:
     run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vf", vf, *ENCODE, *audio_args, "-f", "mp4", str(out)])
 
 
-def silhouette(clip: Clip, src: Path, out: Path) -> None:
+def venv_step(clip: Clip, script: Path, src: Path, spec: dict, out: Path) -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        spec, frames = Path(tmp) / "track.json", Path(tmp) / "frames"
-        spec.write_text(clip.track)
-        result = subprocess.run([str(VENV_PYTHON), str(SEGMENT), str(src), str(spec), str(frames)], text=True)
-        if result.returncode != 0:
-            sys.exit(f"{clip.id}: segmentation failed")
+        spec_path = Path(tmp) / "spec.json"
+        spec_path.write_text(json.dumps(spec))
+        if subprocess.run([str(VENV_PYTHON), str(script), str(src), str(spec_path), str(out)]).returncode != 0:
+            sys.exit(f"{clip.id}: {script.name} failed")
+
+
+def silhouette(clip: Clip, masks: Path, render: dict, out: Path) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        frames = Path(tmp) / "frames"
+        venv_step(clip, SILHOUETTE, masks, render, frames)
         run(["ffmpeg", "-y", "-v", "error", "-framerate", str(FPS), "-i", str(frames / "%05d.png"),
              "-vf", f"scale=-2:{HEIGHT}", *ENCODE, "-an", "-f", "mp4", str(out)])
 
@@ -221,9 +228,14 @@ def build(clips: list[Clip]) -> bool:
             outputs[f"{name}.mp4"] = art.make(f"{name}.mp4", [chain, ENCODE, art.ledger["source.mp4"]],
                                               lambda out, chain=chain: encode(source, out, chain, audio=False))
         if clip.track:
+            spec = json.loads(clip.track)
+            tracking = {k: spec[k] for k in TRACK_KEYS}
+            render = {k: v for k, v in spec.items() if k not in TRACK_KEYS}
+            masks = art.make("masks.npz", [tracking, TRACK.read_text(), art.ledger["clip.mp4"]],
+                             lambda out: venv_step(clip, TRACK, outputs["clip.mp4"], tracking, out))
             outputs["silhouette.mp4"] = art.make(
-                "silhouette.mp4", [clip.track, SEGMENT.read_text(), ENCODE, art.ledger["clip.mp4"]],
-                lambda out: silhouette(clip, outputs["clip.mp4"], out))
+                "silhouette.mp4", [render, SILHOUETTE.read_text(), ENCODE, art.ledger["masks.npz"]],
+                lambda out: silhouette(clip, masks, render, out))
         art.make("contact.png", [list(FILTERS), [art.ledger[n] for n in outputs]],
                  lambda out: contact_sheet(list(outputs.values()), out, expected))
         problems = verify(outputs, expected)
