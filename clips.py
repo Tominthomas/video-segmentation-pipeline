@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch NBA highlight clips and render Moment's filtered variants.
+"""Fetch NBA highlight clips and render Bagwork's filtered variants.
 
   python3 pipeline/clips.py scout <url>                         frames every second, to pick start/end
   python3 pipeline/clips.py add [--manifest FILE] <url> --player NAME [--id ID]   scout, then add a manifest stub
@@ -73,11 +73,11 @@ TRACK_KEYS = ("frame", "objects")
 TRACK_VERSION = 1
 # SAM shares one GPU and most of the memory, so tracking runs one job at a time and only with this much free.
 # The lock lives outside the checkout so builds from every worktree on the machine share it.
-SAM_LOCK = Path.home() / ".local" / "state" / "moment" / "sam.lock"
+SAM_LOCK = Path.home() / ".local" / "state" / "bagwork" / "sam.lock"
 # Waiters open the lock with "w", which truncates it, so the holder says who it is in a file of its own.
 SAM_HOLDER = SAM_LOCK.with_name("sam-holder.json")
 WAIT_REPORT = 30
-MIN_FREE = int(os.environ.get("MOMENT_MIN_FREE", "30"))
+MIN_FREE = int(os.environ.get("BAGWORK_MIN_FREE", "30"))
 
 # The best rendition fetch downloads. add reports its size, so a source is judged by what the build will use.
 FETCH_FORMAT = "bv*[height<=1080]+ba/b[height<=1080]"
