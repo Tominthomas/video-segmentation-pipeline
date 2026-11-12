@@ -1,19 +1,44 @@
 """Render cached masks as silhouette frames: players white, ball orange, hoop gray, on black.
 
 Run by clips.py with the project venv:  .venv/bin/python pipeline/silhouette.py <masks.npz> <render.json> <out_dir>
-render.json picks the crop. "follow" is "action" (every player and the hoop), "ball", or "holder"
-(the player who has the ball; from the release on it widens to keep the shooter and the hoop in frame).
+render.json picks the crop. "follow" is "action" (every player and the hoop), "ball", "holder"
+(the player who has the ball; from the release on it widens to keep the shooter, ball and hoop in frame),
+or "full" (the whole frame, pillarboxed in black to 16:9, for portrait sources that no 16:9 crop can hold).
 "zoom" sets the window to 1/zoom of the frame width for "ball" and "holder" (default 2).
+"frames" [first, end) renders only that slice of the clip; the crop is still planned over the whole clip.
+"mystery" lists the mystery player's object index. When it is set, every other player turns dark gray.
+The ball keeps SAM's own mask on frames where it passes ball_track's checks, so it has the real ball's shape and
+hands cover it. A short gap draws a disc on the cleaned track so the ball doesn't flicker, and a longer one leaves
+it hidden: the ball isn't the focus, and the player is. The full track still steers the crop. "ball_keys"
+[[frame, x, y], ...] place it by hand where SAM's mask can't, such as a ball hidden in a crowd, and always draw.
 """
 
 import json
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from PIL import Image, ImageFilter
 
 COLORS = {"player": (255, 255, 255), "ball": (255, 122, 26), "hoop": (150, 150, 150)}
+# With a mystery player, each role draws in this order, so he covers a hoop mask that bleeds onto his body
+# and only the ball draws over him.
+FOCUS = {"player": (90, 90, 90), "hoop": (150, 150, 150), "mystery": (255, 255, 255), "ball": (255, 122, 26)}
+TINTS = [
+    (230, 25, 75),
+    (60, 180, 75),
+    (255, 225, 25),
+    (0, 130, 200),
+    (245, 130, 48),
+    (145, 30, 180),
+    (70, 240, 240),
+    (240, 50, 230),
+    (210, 245, 60),
+    (250, 190, 212),
+    (0, 128, 128),
+    (170, 110, 40),
+]
 ASPECT = 16 / 9
 PAD = 1.25
 SMOOTH_FRAMES = 15
@@ -23,15 +48,214 @@ ZOOM_SMOOTH_FRAMES = 25
 # output size, then cut with a narrow ramp so edges come out curved and anti-aliased instead of stepped.
 EDGE_BLUR = 2.0
 EDGE_RAMP = 0.12
-# How close, in 720p pixels, the ball must be to a player's box to count as theirs.
-HOLD_DISTANCE = 30
+# A round ball fills pi/4 of its box; a ball mask far from that has merged with a hand, head or nothing.
+BALL_FILL = np.pi / 4
+BALL_FILL_TOLERANCE = 0.25
+# Motion blur stretches a fast lob to about 0.35 of a player's height, so only a larger ball means a merged mask.
+BALL_MAX_SIDE = 0.4
+# Blurred flights in the first ten clips stay under 2:1. Every accepted mask over 2.5:1 was an arm, the rim or a
+# ball cut by the frame's edge.
+BALL_MAX_ASPECT = 2.5
+# A ball mask this far from the median of its neighbors, in player heights, has jumped onto something else.
+BALL_MAX_JUMP = 0.5
+BALL_NEIGHBORS = 3
+# After a make SAM's ball mask can latch onto the orange rim. A candidate this share inside the hoop's mask whose
+# place relative to the hoop moves less than RIM_STILL player heights over RIM_FRAMES frames is the rim. A ball
+# rolling on the rim sits mostly outside the hoop's mask, and one dropping through the net is gone well within
+# the 0.6 s window, so a ball briefly hidden in the rim keeps its mask.
+RIM_INSIDE = 0.6
+RIM_STILL = 0.06
+RIM_FRAMES = 18
+# A gap in the ball's track is fitted through the known centers up to this many frames either side of it.
+FIT_FRAMES = 8
+# A gap longer than this is more than one flight, such as a dunk dropping through the net and bouncing, so it is
+# drawn straight between its two nearest centers instead of extending one arc across it.
+ARC_FRAMES = 15
+# How close, in player heights, the ball must be to a player's box to count as theirs, and to the hoop's box to
+# count as at the rim. About 30 px at the 150 to 170 px players of a broadcast angle.
+HOLD_REACH = 0.19
+# A new holder must keep the ball in reach this many seen frames (see possessions), so a ball in flight passing a
+# contesting defender's hand doesn't take it from the player who has it.
+HOLD_FRAMES = 5
+# In the first ten clips a contested shot brushes a defender's reach for at most 2 seen frames, and every shooter
+# kept the ball for at least 5, so a quick catch and shoot of 3 still names its shooter.
+SHOT_FRAMES = 3
+# A run of inferred ball frames up to this long is drawn as a disc so the ball doesn't blink. A longer one, such
+# as a ball lost against the crowd in flight, is left hidden.
+SHOW_GAP = 3
 
 
-def load(path: Path) -> tuple[list[str], np.ndarray]:
+def load(path: Path, frames: list[int] | None = None) -> tuple[list[str], np.ndarray]:
+    """A packed mask file's object kinds and its masks, only the listed frames when given.
+
+    A clip's masks.npz is [frame, object, h, w] with its kinds; one object's cache is [frame, h, w] with none.
+    """
     data = np.load(path)
-    shape = tuple(data["shape"])
-    masks = np.unpackbits(data["bits"], axis=-1, count=shape[-1]).astype(bool).reshape(shape)
-    return [str(k) for k in data["kinds"]], masks
+    bits = data["bits"] if frames is None else data["bits"][frames]
+    kinds = [str(k) for k in data["kinds"]] if "kinds" in data else []
+    return kinds, np.unpackbits(bits, axis=-1, count=int(data["shape"][-1])).view(bool)
+
+
+def shapes(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per frame of one object's [frame, h, w] masks: its area, box (x0, y0, x1, y1) and centroid (x, y).
+
+    Box and centroid are NaN on frames where the object isn't visible.
+    """
+    rows, cols = mask.sum(axis=2), mask.sum(axis=1)
+    area = rows.sum(axis=1).astype(float)
+    seen = area > 0
+    box = np.full((len(mask), 4), np.nan)
+    centroid = np.full((len(mask), 2), np.nan)
+    for f in np.flatnonzero(seen):
+        ys, xs = np.flatnonzero(rows[f]), np.flatnonzero(cols[f])
+        box[f] = xs[0], ys[0], xs[-1] + 1, ys[-1] + 1
+        centroid[f] = cols[f] @ np.arange(len(cols[f])) / area[f], rows[f] @ np.arange(len(rows[f])) / area[f]
+    return area, box, centroid
+
+
+def runs(frames: np.ndarray) -> list[tuple[int, int]]:
+    """Group sorted frame numbers into (first, last) runs of consecutive frames."""
+    if not len(frames):
+        return []
+    breaks = np.flatnonzero(np.diff(frames) > 1)
+    firsts, lasts = frames[np.r_[0, breaks + 1]], frames[np.r_[breaks, len(frames) - 1]]
+    return list(zip(firsts.tolist(), lasts.tolist(), strict=True))
+
+
+def player_height(kinds: list[str], stats: list, frame_h: int) -> float:
+    """Median player box height over the clip, from each object's shapes(), or a quarter frame without players."""
+    heights = [stats[i][1][:, 3] - stats[i][1][:, 1] for i, kind in enumerate(kinds) if kind == "player"]
+    return float(np.nanmedian(np.concatenate(heights))) if heights else frame_h / 4
+
+
+def on_rim(ball: np.ndarray, hoop: np.ndarray, good: np.ndarray, offset: np.ndarray, height: float) -> np.ndarray:
+    """Frames whose ball mask is the rim: mostly inside the hoop's mask and still relative to the hoop, by offset
+    (ball center minus hoop center), for RIM_FRAMES in a row. Only frames in good are considered."""
+    inside = np.zeros(len(ball), bool)
+    for f in np.flatnonzero(good):
+        inside[f] = (ball[f] & hoop[f]).sum() >= RIM_INSIDE * ball[f].sum()
+    rim = np.zeros(len(ball), bool)
+    for first, last in runs(np.flatnonzero(inside & ~np.isnan(offset).any(axis=1))):
+        for start in range(first, last - RIM_FRAMES + 2):
+            window = offset[start : start + RIM_FRAMES]
+            if np.ptp(window, axis=0).max() <= RIM_STILL * height:
+                rim[start : start + RIM_FRAMES] = True
+    return rim
+
+
+def ball_checks(area: np.ndarray, box: np.ndarray, height: float) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Per shape check a ball mask must pass, the frames that fail it and the value it measures, from shapes():
+    "fill" of its box near a disc's, "aspect" no longer than motion blur stretches it, and "size" no bigger than
+    BALL_MAX_SIDE of a player. Frames without a mask fail none."""
+    width, tall = box[:, 2] - box[:, 0], box[:, 3] - box[:, 1]
+    fill = area / (width * tall)
+    aspect = np.fmax(width, tall) / np.fmin(width, tall)
+    side = np.fmax(width, tall) / height
+    return {
+        "fill": (np.abs(fill - BALL_FILL) > BALL_FILL_TOLERANCE, fill),
+        "aspect": (aspect > BALL_MAX_ASPECT, aspect),
+        "size": (side > BALL_MAX_SIDE, side),
+    }
+
+
+class Track(NamedTuple):
+    """The ball per frame: its center (x, y), its radius, and where each center came from, per ball_track()."""
+
+    xy: np.ndarray
+    radius: float
+    source: np.ndarray
+
+    def seen(self) -> np.ndarray:
+        """Per frame, whether SAM's mask or a key placed the ball, rather than a fit or hold inferring it."""
+        return np.isin(self.source, ("mask", "key"))
+
+    def shown(self) -> np.ndarray:
+        """Per frame, whether the silhouette draws the ball: every seen frame, and each run of inferred ("fit" or
+        "hold") frames up to SHOW_GAP long."""
+        show = self.seen()
+        for first, last in runs(np.flatnonzero(np.isin(self.source, ("fit", "hold")))):
+            show[first : last + 1] = last - first + 1 <= SHOW_GAP
+        return show
+
+
+def ball_track(kinds: list[str], masks: np.ndarray, keys: list) -> Track:
+    """Per frame the ball's center (x, y), its radius, and where each center came from.
+
+    A frame keeps SAM's ball mask ("mask") only when it looks like a ball (see ball_checks), is not latched onto the
+    rim (see on_rim), and is near where its neighbors put it. Keys [frame, x, y] override the mask ("key"). Each gap
+    up to ARC_FRAMES long is fitted through the known centers on both sides, x linear and y quadratic in time, and a
+    longer one runs straight between its nearest two ("fit"). A gap at either end holds the nearest known center
+    ("hold"). Both work relative to the hoop when it is in view throughout, so a camera pan cancels out. With no mask
+    or key to go on, every center is NaN.
+    """
+    stats = [shapes(masks[:, i]) for i in range(len(kinds))]
+    height = player_height(kinds, stats, masks.shape[2])
+    area, box, center = stats[kinds.index("ball")]
+    hoop = stats[kinds.index("hoop")][2] if "hoop" in kinds else np.full_like(center, np.nan)
+    good = (area > 0) & ~np.any([bad for bad, _ in ball_checks(area, box, height).values()], axis=0)
+    if "hoop" in kinds:
+        good &= ~on_rim(masks[:, kinds.index("ball")], masks[:, kinds.index("hoop")], good, center - hoop, height)
+    candidates = np.flatnonzero(good)
+    for f in candidates:
+        near = candidates[(np.abs(candidates - f) <= BALL_NEIGHBORS) & (candidates != f)]
+        if len(near) >= 2 and np.linalg.norm(center[f] - np.median(center[near], axis=0)) > BALL_MAX_JUMP * height:
+            good[f] = False
+    radius = float(np.median(np.sqrt(area[good] / np.pi))) if good.any() else 0.06 * height
+    xy = np.where(good[:, None], center, np.nan)
+    source = np.where(good, "mask", "")
+    for f, x, y in keys:
+        if not 0 <= f < len(masks):
+            sys.exit(f"ball key frame {f} is outside the clip's {len(masks)} frames")
+        xy[f], source[f] = (x, y), "key"
+    known = np.flatnonzero(source != "")
+    for first, last in runs(np.flatnonzero(source == "")):
+        before = known[(known < first) & (known >= first - FIT_FRAMES)]
+        after = known[(known > last) & (known <= last + FIT_FRAMES)]
+        before = before if len(before) and last - first < ARC_FRAMES else known[known < first][-1:]
+        after = after if len(after) and last - first < ARC_FRAMES else known[known > last][:1]
+        fit = np.r_[before, after]
+        if not len(fit):
+            continue
+        gap = np.arange(first, last + 1)
+        span = np.r_[fit, gap]
+        origin = hoop if not np.isnan(hoop[span]).any() else np.zeros_like(hoop)
+        rel = xy[fit] - origin[fit]
+        if len(before) and len(after):
+            fx = np.polyfit(fit, rel[:, 0], 1)
+            fy = np.polyfit(fit, rel[:, 1], min(2, len(fit) - 1))
+            xy[gap] = np.stack([np.polyval(fx, gap), np.polyval(fy, gap)], axis=1) + origin[gap]
+            source[gap] = "fit"
+        else:
+            xy[gap] = rel[0 if len(before) == 0 else -1] + origin[gap]
+            source[gap] = "hold"
+    return Track(xy, radius, source)
+
+
+def draw_ball(kinds: list[str], masks: np.ndarray, keys: list) -> Track | None:
+    """Keep the ball's masks on ball_track()'s "mask" frames and draw a disc on every other frame, print which
+    frames were filled in, and return the track."""
+    if "ball" not in kinds:
+        return None
+    track = ball_track(kinds, masks, keys)
+    xy, radius, source = track
+    ys, xs = np.ogrid[: masks.shape[2], : masks.shape[3]]
+    ball = kinds.index("ball")
+    for f, (x, y) in enumerate(xy):
+        if source[f] == "mask":
+            continue
+        masks[f, ball] = (xs - x) ** 2 + (ys - y) ** 2 <= radius**2 if not np.isnan(x) else False
+    counts = ", ".join(
+        f"{kind} {len(frames)}" + (f" {runs(frames)}" if kind in ("fit", "hold") else "")
+        for kind in ("mask", "key", "fit", "hold")
+        if len(frames := np.flatnonzero(source == kind))
+    )
+    print(f"  ball radius {radius:.1f}: {counts or 'never placed'}", flush=True)
+    return track
+
+
+def hide_ball(kinds: list[str], masks: np.ndarray, track: Track) -> None:
+    """Clear the ball on every frame the track doesn't show."""
+    masks[~track.shown(), kinds.index("ball")] = False
 
 
 def boxes_of(masks: np.ndarray) -> list[tuple[int, int, int, int] | None]:
@@ -83,49 +307,107 @@ def union(a, b):
     return min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])
 
 
-def holders(kinds: list[str], masks: np.ndarray) -> tuple[list[int | None], int | None]:
-    """Per frame, which player holds the ball (None while it's loose or in the air), and the release frame.
+class Possession(NamedTuple):
+    """A player keeping the ball in reach from his first seen frame to his last, how many frames the ball was seen in
+    his reach, and its side-to-side place on him (ball x minus his box's center x) at the first."""
 
-    The holder is sticky: a defender reaching in doesn't take the ball until it leaves the holder's reach,
-    so a contested shot stays on the shooter. Once the ball reaches the rim, the player who released it is
-    held for the rest of the clip, so the crop stays on the scorer instead of chasing the inbound pass.
+    player: int
+    first: int
+    last: int
+    seen: int
+    side: float
+
+
+def possessions(near: dict[int, dict[int, tuple[float, float]]], reach: float) -> list[Possession]:
+    """Possessions in time order, from each seen frame's players in reach as {player: (gap, side)}.
+
+    One seen HOLD_FRAMES times is held: it lasts while its player keeps the ball in reach, across unseen frames too,
+    so a defender reaching in doesn't take it. A shorter one lasts only while he stays nearest with the ball on the
+    same side of him, across unseen gaps up to SHOW_GAP, so a ball in flight crossing his box on screen or one lost
+    from view for longer ends it.
+    """
+    found: list[Possession] = []
+    previous = None
+    for frame, players in near.items():
+        nearest = min(players, key=lambda i: players[i][0]) if players else None
+        last = found[-1] if found else None
+        if (
+            last is not None
+            and last.last == previous
+            and last.player in players
+            and (
+                last.seen >= HOLD_FRAMES
+                or (
+                    frame - last.last <= SHOW_GAP + 1
+                    and nearest == last.player
+                    and abs(players[nearest][1] - last.side) <= reach
+                )
+            )
+        ):
+            found[-1] = last._replace(last=frame, seen=last.seen + 1)
+        elif nearest is not None:
+            found.append(Possession(nearest, frame, frame, 1, players[nearest][1]))
+        previous = frame
+    return found
+
+
+def holders(
+    kinds: list[str], masks: np.ndarray, track: Track | None
+) -> tuple[list[int | None], int | None, int | None]:
+    """Per frame, which player holds the ball (None while it's loose or in the air), the release frame, and the
+    frame the ball reaches the rim.
+
+    Only frames where the track saw the ball (see Track.seen) count toward possessions or reach the rim. A fitted
+    or held center is a guess, and one that crosses a player or the hoop would invent a holder or a finish. A held
+    possession (see possessions) is its player's from its first frame through the unseen frames after its last.
+    The shooter is the player of the last possession before the rim at least SHOT_FRAMES long, so a quick catch and
+    shoot keeps its shooter and a ball in flight brushing a player doesn't. He holds the ball from that
+    possession's first frame to the end of the clip, so the crop stays on the scorer instead of chasing the inbound
+    pass, and the release is the frame after his last in reach. Without a shooter the release is the rim frame.
     """
     players = [i for i, k in enumerate(kinds) if k == "player"]
+    stats = [shapes(masks[:, i]) if i in players else None for i in range(len(kinds))]
+    reach = HOLD_REACH * player_height(kinds, stats, masks.shape[2])
+    seen = track.seen() if track else np.zeros(len(masks), bool)
     ball = boxes_of(masks[:, [i for i, k in enumerate(kinds) if k == "ball"]])
+    ball = {f: center(b) for f, (b, s) in enumerate(zip(ball, seen, strict=True)) if b and s}
     hoop = boxes_of(masks[:, [i for i, k in enumerate(kinds) if k == "hoop"]])
-    result, current, last_holder = [], None, None
-    shooter = release = None
-    for frame, b in enumerate(ball):
-        if b and hoop[frame] and shooter is None:
-            h, (bx, by) = hoop[frame], ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
-            if (
-                h[0] - HOLD_DISTANCE <= bx <= h[2] + HOLD_DISTANCE
-                and h[1] - HOLD_DISTANCE <= by <= h[3] + HOLD_DISTANCE
-            ):
-                shooter, release = last_holder, frame
-                # Re-point the flight frames before the rim at the shooter too, so the hold starts at release.
-                while release > 0 and result[release - 1] is None:
-                    release -= 1
-                    result[release] = shooter
-        if shooter is not None:
-            result.append(shooter)
-            continue
-        gaps = {}
-        if b:
-            bx, by = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
-            for i in players:
-                box = boxes_of(masks[frame : frame + 1, [i]])[0]
-                if box:
-                    gaps[i] = max(box[0] - bx, 0, bx - box[2]) + max(box[1] - by, 0, by - box[3])
-        if current not in gaps or gaps[current] > HOLD_DISTANCE:
-            near = [i for i, gap in gaps.items() if gap <= HOLD_DISTANCE]
-            current = min(near, key=gaps.get) if near else None
-        last_holder = current if current is not None else last_holder
-        result.append(current)
-    return result, release
+    rim = next(
+        (
+            f
+            for f, (bx, by) in ball.items()
+            if (h := hoop[f]) and h[0] - reach <= bx <= h[2] + reach and h[1] - reach <= by <= h[3] + reach
+        ),
+        None,
+    )
+    near = {}
+    for frame, (bx, by) in ball.items():
+        if rim is not None and frame >= rim:
+            break
+        near[frame] = {}
+        for i in players:
+            if box := boxes_of(masks[frame : frame + 1, [i]])[0]:
+                gap = max(box[0] - bx, 0, bx - box[2]) + max(box[1] - by, 0, by - box[3])
+                if gap <= reach:
+                    near[frame][i] = gap, bx - center(box)[0]
+    found = possessions(near, reach)
+    result: list[int | None] = [None] * len(masks)
+    for p in found:
+        if p.seen >= HOLD_FRAMES:
+            result[p.first : p.last + 1] = [p.player] * (p.last - p.first + 1)
+    for frame in range(1, len(masks)):
+        if frame not in ball and result[frame] is None:
+            result[frame] = result[frame - 1]
+    shot = next((p for p in reversed(found) if p.seen >= SHOT_FRAMES), None)
+    if rim is None or shot is None:
+        return result, rim, rim
+    result[shot.first :] = [shot.player] * (len(masks) - shot.first)
+    return result, shot.last + 1, rim
 
 
-def windows(kinds: list[str], masks: np.ndarray, render: dict) -> tuple[tuple[int, int], np.ndarray]:
+def windows(
+    kinds: list[str], masks: np.ndarray, render: dict, track: Track | None
+) -> tuple[tuple[int, int], np.ndarray]:
     """The output size and each frame's (x, y, width, height) crop, per the render's follow mode."""
     _, _, h, w = masks.shape
 
@@ -133,6 +415,9 @@ def windows(kinds: list[str], masks: np.ndarray, render: dict) -> tuple[tuple[in
         return [i for i, k in enumerate(kinds) if k in wanted]
 
     follow = render.get("follow", "action")
+    targets: list[tuple[float, float, float] | None]
+    if follow == "full":
+        return (max(w, int(h * ASPECT)) // 2 * 2, h), np.tile([0, 0, w, h], (masks.shape[0], 1))
     if follow == "action":
         boxes = boxes_of(masks[:, of_kind({"player", "hoop"})])
         width = max((fit_width(b) for b in boxes if b), default=w)
@@ -143,24 +428,34 @@ def windows(kinds: list[str], masks: np.ndarray, render: dict) -> tuple[tuple[in
         if follow == "ball":
             targets = [(*center(b), out_w) if b else None for b in boxes_of(masks[:, of_kind({"ball"})])]
         else:
-            held, release = holders(kinds, masks)
+            held, release, _ = holders(kinds, masks, track)
             hoop = boxes_of(masks[:, of_kind({"hoop"})])
+            ball = boxes_of(masks[:, of_kind({"ball"})])
             targets = []
             for frame, i in enumerate(held):
                 box = boxes_of(masks[frame : frame + 1, [i]])[0] if i is not None else None
                 if release is not None and frame >= release:
-                    box = union(box, hoop[frame])
+                    # The ball joins the shooter and hoop, so a camera that pans off the shooter still shows the finish.
+                    box = union(union(box, hoop[frame]), ball[frame])
                     targets.append((*center(box), max(out_w, fit_width(box))) if box else None)
                 else:
                     targets.append((*center(box), out_w) if box else None)
     return (out_w, int(out_w / ASPECT)), glide(targets, w, h)
 
 
+def layers(kinds: list[str], mystery: list[int]) -> list[tuple[int, tuple[int, int, int]]]:
+    """Each object's index and color, in draw order. Without a mystery player, manifest order in COLORS."""
+    if not mystery:
+        return [(i, COLORS[kind]) for i, kind in enumerate(kinds)]
+    roles = ["mystery" if i in mystery else kind for i, kind in enumerate(kinds)]
+    return [(i, color) for role, color in FOCUS.items() for i, r in enumerate(roles) if r == role]
+
+
 def smooth_edges(mask: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     """A 0..1 coverage map of the mask at output size, with smooth anti-aliased edges."""
     if not mask.any():
         return np.zeros((size[1], size[0]), dtype=np.float32)
-    soft = Image.fromarray(mask.astype(np.uint8) * 255).resize(size, Image.BILINEAR)
+    soft = Image.fromarray(mask.astype(np.uint8) * 255).resize(size, Image.Resampling.BILINEAR)
     soft = np.asarray(soft.filter(ImageFilter.GaussianBlur(EDGE_BLUR)), dtype=np.float32) / 255
     return np.clip((soft - 0.5) / EDGE_RAMP + 0.5, 0, 1)
 
@@ -168,14 +463,25 @@ def smooth_edges(mask: np.ndarray, size: tuple[int, int]) -> np.ndarray:
 def main() -> None:
     masks_path, render_path, out_dir = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     kinds, masks = load(masks_path)
-    size, crops = windows(kinds, masks, json.loads(render_path.read_text()))
+    render = json.loads(render_path.read_text())
+    with np.errstate(divide="ignore", invalid="ignore"):
+        track = draw_ball(kinds, masks, render.get("ball_keys", []))
+    size, crops = windows(kinds, masks, render, track)
+    if track:
+        hide_ball(kinds, masks, track)
+    # Only "full" crops narrower than the output; it renders at native size and centers in the black.
+    inner = (min(masks.shape[3], size[0]), size[1])
+    left = (size[0] - inner[0]) // 2
     out_dir.mkdir(parents=True, exist_ok=True)
-    for frame, (x, y, cw, ch) in enumerate(crops):
+    first, end = render.get("frames", (0, len(crops)))
+    order = layers(kinds, render.get("mystery", []))
+    for frame, (x, y, cw, ch) in enumerate(crops[first:end], start=first):
         canvas = np.zeros((size[1], size[0], 3), dtype=np.float32)
-        for i, kind in enumerate(kinds):
-            alpha = smooth_edges(masks[frame, i, y : y + ch, x : x + cw], size)
-            canvas += (np.asarray(COLORS[kind], dtype=np.float32) - canvas) * alpha[..., None]
-        Image.fromarray(canvas.round().astype(np.uint8)).save(out_dir / f"{frame:05d}.png")
+        for i, color in order:
+            alpha = smooth_edges(masks[frame, i, y : y + ch, x : x + cw], inner)
+            region = canvas[:, left : left + inner[0]]
+            region += (np.asarray(color, dtype=np.float32) - region) * alpha[..., None]
+        Image.fromarray(canvas.round().astype(np.uint8)).save(out_dir / f"{frame - first:05d}.png")
 
 
 if __name__ == "__main__":
