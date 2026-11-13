@@ -9,6 +9,8 @@
   python3 pipeline/clips.py review [--manifest FILE] id         build, then a local review.html with overlay and QC
   python3 pipeline/clips.py crops [--manifest FILE] id --frames 140-160:4,171 --box x0,y0,x1,y1
                                                                 gridded zooms of a region, to read ball_keys off
+  python3 pipeline/clips.py crops [--manifest FILE] id --frames 40-70:3 --detail
+                                                                the detail pass's crops, to read detail refines off
 
 The manifest defaults to fixtures/clips.json, the public sample clips. Real puzzles keep theirs outside the repo.
 
@@ -68,9 +70,27 @@ QC = ROOT / "pipeline" / "qc.py"
 PROPOSE = ROOT / "pipeline" / "propose.py"
 REVIEW = ROOT / "pipeline" / "review.py"
 CROPS = ROOT / "pipeline" / "crops.py"
+MATTE = ROOT / "pipeline" / "matte.py"
+DETAIL = ROOT / "pipeline" / "detail.py"
+# MatAnyone 2 lives outside the checkout, in its own venv, so every worktree shares one install (docs/SPEC.md#matting).
+MATTE_HOME = Path.home() / ".local" / "share" / "bagwork" / "matte"
+MATTE_PYTHON = MATTE_HOME / "venv" / "bin" / "python"
+MATANYONE = MATTE_HOME / "MatAnyone2"
+MATANYONE_COMMIT = "0079197acd6d16a741f71558809c06c586c579e0"
+MATTE_WEIGHTS = MATTE_HOME / "matanyone2.pth"
+MATTE_WEIGHTS_SHA256 = "5e9821e4087231427376b437c85bb6e072b41e582314f06fd524f75bc4af5914"
 TRACK_KEYS = ("frame", "objects")
 # Part of every tracked object's cache key. Bump it when a track.py change alters the masks it writes.
 TRACK_VERSION = 1
+# Part of matte.npz's recipe with matte.py's text. Bump it when a change to the silhouette.py helpers matte.py imports
+# (dilate, erode, shapes, smooth, load) alters the mattes it writes.
+MATTE_VERSION = 1
+# Part of detail.npz's recipe with detail.py's text. Bump it when a change to the matte.py or silhouette.py helpers
+# detail.py imports alters the detail it writes.
+DETAIL_VERSION = 1
+# How the mystery player's shape is drawn (docs/SPEC.md#python-clip-pipeline). "auto" picks "detail" or "matte" by
+# his size.
+SHAPES = ("auto", "detail", "matte", "sam")
 # SAM shares one GPU and most of the memory, so tracking runs one job at a time and only with this much free.
 # The lock lives outside the checkout so builds from every worktree on the machine share it.
 SAM_LOCK = Path.home() / ".local" / "state" / "bagwork" / "sam.lock"
@@ -232,12 +252,14 @@ def venv_step(
     log: Path | None = None,
     flags: tuple[str, ...] = (),
     slot: int | None = None,
+    python: Path = VENV_PYTHON,
 ) -> None:
-    """Run a pipeline script in the project venv, exiting on failure. A held SAM slot's fd passes to the script."""
+    """Run a pipeline script in a venv, the project's by default, exiting on failure. A held SAM slot's fd passes to
+    the script."""
     with tempfile.TemporaryDirectory() as tmp, Path(log or os.devnull).open("a") as log_file:
         spec_path = Path(tmp) / "spec.json"
         spec_path.write_text(json.dumps(spec))
-        cmd = [str(VENV_PYTHON), str(script), *flags, str(src), str(spec_path), str(out)]
+        cmd = [str(python), str(script), *flags, str(src), str(spec_path), str(out)]
         stderr = log_file if log else None
         if subprocess.run(cmd, stderr=stderr, pass_fds=() if slot is None else (slot,), check=False).returncode != 0:
             sys.exit(f"{clip.id}: {script.name} failed" + (f", see {log}" if log else ""))
@@ -249,11 +271,12 @@ def free_memory() -> int:
 
 
 def track_progress(log: Path) -> str:
-    """The last group a track log says it started and how far that group's latest SAM pass has run."""
+    """The last group a track log says it started and how far that group's latest SAM pass has run, or the last line
+    of a log with no groups, such as a matte's."""
     lines = re.split(r"[\r\n]+", log.read_text(errors="replace"))
     marks = [i for i, line in enumerate(lines) if line.startswith("tracking group")]
     if not marks:
-        return "loading SAM"
+        return next((line for line in reversed(lines) if line.strip()), "loading")
     bars = [
         m
         for line in lines[marks[-1] :]
@@ -349,6 +372,135 @@ def track_objects(spec: dict, folder: Path, clip_hash: str) -> list[dict]:
         key = hashlib.sha256(json.dumps([TRACK_VERSION, clip_hash, prompts], sort_keys=True).encode()).hexdigest()
         objects.append({"kind": obj["kind"], "prompts": prompts, "cache": str(folder / "objects" / f"{key[:16]}.npz")})
     return objects
+
+
+def matte_missing() -> str | None:
+    """Why this machine can't matte, or None when MatAnyone 2 is installed at its pinned commit and weights."""
+    if not MATTE_PYTHON.exists():
+        return f"no MatAnyone 2 venv at {MATTE_PYTHON.parent.parent}"
+    head = subprocess.run(
+        ["git", "-C", str(MATANYONE), "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+    )
+    if head.stdout.strip() != MATANYONE_COMMIT:
+        return f"{MATANYONE} is not at commit {MATANYONE_COMMIT[:7]}"
+    if not MATTE_WEIGHTS.exists():
+        return f"no weights at {MATTE_WEIGHTS}"
+    with MATTE_WEIGHTS.open("rb") as f:
+        if hashlib.file_digest(f, "sha256").hexdigest() != MATTE_WEIGHTS_SHA256:
+            return f"{MATTE_WEIGHTS} does not match sha256 {MATTE_WEIGHTS_SHA256[:8]}"
+    return None
+
+
+def matte_step(clip: Clip, art: Artifacts, source: Path, spec: dict, out: Path) -> None:
+    """Run matte.py under the SAM slot, which it shares the GPU with, logging to matte.log."""
+    log = art.folder / "matte.log"
+    log.write_text(f"{time.strftime('%X')} queued, waiting for the SAM slot\n")
+    print(f"  matting the mystery player, progress in {log}", flush=True)
+    with sam_slot(clip, "matte", log) as slot:
+        started = time.monotonic()
+        venv_step(clip, MATTE, source, spec, out, log, slot=slot, python=MATTE_PYTHON)
+    with log.open("a") as f:
+        f.write(f"{time.strftime('%X')} finished matting in {time.monotonic() - started:.1f}s\n")
+
+
+def detail_step(clip: Clip, art: Artifacts, source: Path, spec: dict, out: Path) -> None:
+    """Run detail.py under the SAM slot, logging to detail.log."""
+    log = art.folder / "detail.log"
+    log.write_text(f"{time.strftime('%X')} queued, waiting for the SAM slot\n")
+    print(f"  tracking the mystery player in detail, progress in {log}", flush=True)
+    with sam_slot(clip, "detail", log) as slot:
+        started = time.monotonic()
+        venv_step(clip, DETAIL, source, spec, out, log, slot=slot)
+    with log.open("a") as f:
+        f.write(f"{time.strftime('%X')} finished the detail pass in {time.monotonic() - started:.1f}s\n")
+
+
+def shape_of(clip: Clip, art: Artifacts, render: dict) -> str:
+    """How the mystery player is drawn: the track spec's "shape", "auto" resolved by his size, or "sam" without one
+    mystery player."""
+    shape = render.get("shape", "auto")
+    if shape not in SHAPES:
+        sys.exit(f'{clip.id}: "shape" must be one of {", ".join(SHAPES)}, not {shape!r}')
+    if len(render["mystery"]) != 1:
+        return "sam"
+    if shape != "auto":
+        return shape
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "shape.json"
+        spec = {"mystery": render["mystery"][0], "frames": render.get("frames")}
+        venv_step(clip, DETAIL, art.folder / "masks.npz", spec, out, flags=("--choose",))
+        chosen = json.loads(out.read_text())
+    print(f"  shape: {chosen['shape']}, by his median height, {chosen['share']:.0%} of the clip's")
+    return chosen["shape"]
+
+
+def with_shape(clip: Clip, art: Artifacts, source: Path, render: dict, objects: list[dict]) -> dict:
+    """The render spec without "shape", and with "matte" or "detail" set to the artifact that draws the mystery
+    player, made first if its recipe changed. Without either, his mask in masks.npz draws him."""
+    shape = shape_of(clip, art, render)
+    render = {k: v for k, v in render.items() if k != "shape"}
+    if shape == "matte":
+        return with_matte(clip, art, source, render, objects)
+    if shape == "detail":
+        return with_detail(clip, art, source, render, objects)
+    return render
+
+
+def with_detail(clip: Clip, art: Artifacts, source: Path, render: dict, objects: list[dict]) -> dict:
+    """The render spec with "detail" set to the clip's detail.npz, made first if its recipe changed."""
+    folder = art.folder
+    mystery = render["mystery"][0]
+    spec = {
+        "clip": str(folder / "clip.mp4"),
+        "masks": str(folder / "masks.npz"),
+        "mystery": mystery,
+        "frames": render.get("frames"),
+        "refines": json.loads(clip.track or "{}")["objects"][mystery].get("detail", []),
+    }
+    # Avoid points and seeds come from the other players' masks, so they are inputs too.
+    players = [Path(obj["cache"]).name for obj in objects if obj["kind"] == "player"]
+    recipe = [
+        DETAIL_VERSION,
+        TRACK_VERSION,
+        art.ledger["source.mp4"],
+        Path(objects[mystery]["cache"]).name,
+        players,
+        spec["frames"],
+        spec["refines"],
+        DETAIL.read_text(),
+    ]
+    detail = art.make("detail.npz", recipe, lambda out: detail_step(clip, art, source, spec, out))
+    return {**render, "detail": str(detail)}
+
+
+def with_matte(clip: Clip, art: Artifacts, source: Path, render: dict, objects: list[dict]) -> dict:
+    """The render spec with "matte" set to the clip's matte.npz, made first if its recipe changed, or without it when
+    this machine can't matte."""
+    if reason := matte_missing():
+        print(f"  matte: off, {reason}; rendering SAM's silhouette. docs/SPEC.md#matting installs it")
+        return render
+    folder = art.folder
+    spec = {
+        "clip": str(folder / "clip.mp4"),
+        "masks": str(folder / "masks.npz"),
+        "mystery": render["mystery"][0],
+        "frames": render.get("frames"),
+        "weights": str(MATTE_WEIGHTS),
+    }
+    # Seeds avoid the other players, so their masks are inputs too. The ball's and hoop's are not.
+    players = [Path(obj["cache"]).name for obj in objects if obj["kind"] == "player"]
+    recipe = [
+        MATTE_VERSION,
+        art.ledger["source.mp4"],
+        Path(objects[spec["mystery"]]["cache"]).name,
+        players,
+        spec["frames"],
+        MATANYONE_COMMIT,
+        MATTE_WEIGHTS_SHA256,
+        MATTE.read_text(),
+    ]
+    matte = art.make("matte.npz", recipe, lambda out: matte_step(clip, art, source, spec, out))
+    return {**render, "matte": str(matte)}
 
 
 def silhouette(clip: Clip, masks: Path, render: dict, out: Path) -> None:
@@ -468,20 +620,38 @@ def frame_list(text: str) -> list[int]:
     return frames
 
 
-def crops(clip: Clip, frames: list[int], box: list[int]) -> None:
+def crops(clip: Clip, frames: list[int], box: list[int] | None, detail: bool) -> None:
     """Write crops.png in the clip's folder: the box at each frame, gridded in clip.mp4 pixels, for ball_keys.
 
     The drawn ball from the last build's masks, after the manifest's ball_keys, is ringed where it would render.
-    Masks older than clip.mp4 were tracked on other footage, so they are left out.
+    Masks older than clip.mp4 were tracked on other footage, so they are left out. With detail, it writes
+    detail.png instead: each frame's crop from the detail pass, for detail refines (docs/SPEC.md#detail).
     """
-    art, _, video = normalized(clip)
+    art, source, video = normalized(clip)
     masks = art.folder / "masks.npz"
     current = masks.exists() and masks.stat().st_mtime >= video.stat().st_mtime
     if masks.exists() and not current:
         print(f"  masks.npz predates clip.mp4, so no drawn ball; build {clip.id} to place it")
-    keys = json.loads(clip.track).get("ball_keys", []) if clip.track else []
-    spec = {"frames": frames, "box": box, "ball_keys": keys, "masks": str(masks) if current else None}
-    venv_step(clip, CROPS, video, spec, art.folder / "crops.png")
+    spec = json.loads(clip.track) if clip.track else {}
+    keys = spec.get("ball_keys", [])
+    sheet = {"frames": frames, "box": box, "ball_keys": keys, "masks": str(masks) if current else None, "detail": None}
+    if detail:
+        found = art.folder / "detail.npz"
+        # The detail pass reads the players' masks only, so a re-tracked ball or hoop leaves it current.
+        players = [
+            Path(obj["cache"])
+            for obj in track_objects(spec, art.folder, art.ledger["clip.mp4"])
+            if obj["kind"] == "player"
+        ]
+        made = found.stat().st_mtime if found.exists() else 0
+        if not (current and made and all(p.exists() and made >= p.stat().st_mtime for p in players)):
+            sys.exit(f'{clip.id} has no detail pass over its current masks; build it with "shape": "detail"')
+        mystery = next(i for i, obj in enumerate(spec["objects"]) if obj.get("mystery"))
+        refines = spec["objects"][mystery].get("detail", [])
+        sheet["detail"] = {"path": str(found), "source": str(source), "mystery": mystery, "refines": refines}
+    elif box is None:
+        sys.exit("crops needs --box, or --detail for the detail pass's own crops")
+    venv_step(clip, CROPS, video, sheet, art.folder / ("detail.png" if detail else "crops.png"))
 
 
 def review(clip: Clip) -> None:
@@ -491,7 +661,10 @@ def review(clip: Clip) -> None:
     if not build([clip]):
         sys.exit(1)
     art, source, video = normalized(clip)
-    render = render_spec(clip, json.loads(clip.track), window_seconds(clip, source))
+    spec = json.loads(clip.track)
+    render = render_spec(clip, spec, window_seconds(clip, source))
+    objects = track_objects(spec, art.folder, art.ledger["clip.mp4"])
+    render = with_shape(clip, art, source, render, objects)
     flags = json.loads((art.folder / "qc.json").read_text())["flags"]
     venv_step(clip, REVIEW, video, {"render": render, "flags": flags}, art.folder)
 
@@ -528,10 +701,19 @@ def build(clips: list[Clip]) -> bool:
                 [[obj["kind"], Path(obj["cache"]).name] for obj in objects],
                 lambda out: track_masks(clip, art, outputs["clip.mp4"], objects, out),
             )
+            render = with_shape(clip, art, source, render, objects)
+            # The shape's artifact, and for the detail pass the rules in detail.py that qc.py and silhouette.py apply.
+            drawn = next((render[k] for k in ("matte", "detail") if k in render), None)
+            shaped = [art.ledger[Path(drawn).name]] if drawn else []
+            if "detail" in render:
+                shaped.append(DETAIL.read_text())
             qc = art.make(
                 "qc.json",
-                [QC.read_text(), SILHOUETTE.read_text(), render["mystery"], art.ledger["masks.npz"]],
-                lambda out: run([str(VENV_PYTHON), str(QC), str(masks), json.dumps(render["mystery"]), str(out)]),
+                [QC.read_text(), SILHOUETTE.read_text(), render["mystery"], art.ledger["masks.npz"], *shaped],
+                lambda out: run(
+                    [str(VENV_PYTHON), str(QC), str(masks), json.dumps(render["mystery"]), str(out)]
+                    + ([drawn] if drawn else [])
+                ),
             )
             for f in json.loads(qc.read_text())["flags"]:
                 first, last = f["frames"]
@@ -539,7 +721,7 @@ def build(clips: list[Clip]) -> bool:
                 print(f"  qc: {f['check']}, object {objects_text}, frames {first}-{last}, worst {f['worst']}")
             outputs["silhouette.mp4"] = art.make(
                 "silhouette.mp4",
-                [render, SILHOUETTE.read_text(), ENCODE, art.ledger["masks.npz"]],
+                [render, SILHOUETTE.read_text(), ENCODE, art.ledger["masks.npz"], *shaped],
                 lambda out: silhouette(clip, masks, render, out),
             )
         lengths = {name: trimmed.get(name, expected) for name in outputs}
@@ -676,7 +858,8 @@ def main() -> None:
     crops_cmd.add_argument("--manifest", type=Path, default=SAMPLE_MANIFEST)
     crops_cmd.add_argument("id")
     crops_cmd.add_argument("--frames", type=frame_list, required=True)
-    crops_cmd.add_argument("--box", type=lambda text: [int(v) for v in text.split(",")], required=True)
+    crops_cmd.add_argument("--box", type=lambda text: [int(v) for v in text.split(",")])
+    crops_cmd.add_argument("--detail", action="store_true", help="each frame's detail crop with his owned mask")
     args = parser.parse_args()
     # The venv steps print straight to the terminal, so ours must flush per line to stay in order around them.
     sys.stdout.reconfigure(line_buffering=True)  # ty: ignore[missing-union-attribute] a TextIOWrapper at run time
@@ -692,7 +875,7 @@ def main() -> None:
         "preview": preview,
         "propose": lambda clip: propose(clip, args.frame),
         "review": review,
-        "crops": lambda clip: crops(clip, args.frames, args.box),
+        "crops": lambda clip: crops(clip, args.frames, args.box, args.detail),
     }
     if args.command in one_clip:
         clip = next((c for c in clips if c.id == args.id), None)

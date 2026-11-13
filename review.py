@@ -4,7 +4,8 @@ frame timeline, and stills at the moments an approval turns on.
 Run by clips.py with the project venv:  .venv/bin/python pipeline/review.py <clip.mp4> <review.json> <clip folder>
 review.json is {"render", "flags"}: silhouette.py's render spec and qc.json's flags. It writes review.html in the
 clip folder, and the overlay video and stills beside it in review/. The overlay shows the source video, so the page
-stays on this machine and is never published.
+stays on this machine and is never published. A matted or detail render adds a row to the timeline: the frames drawn
+from the matte or the detail pass, the frames that fell back to SAM, the seeds, and the detail refines.
 """
 
 import html
@@ -14,6 +15,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from detail import Detail
+from matte import Matte
 from PIL import Image, ImageDraw, ImageFont
 from silhouette import TINTS, draw_ball, holders, load
 
@@ -21,6 +24,7 @@ FPS = 30
 SOURCE_COLORS = {"mask": "#3c3", "key": "#4cf", "fit": "#fc3", "hold": "#f55"}
 # A frame whose ball the silhouette leaves off, whatever its source.
 HIDDEN_COLOR = "#777"
+SHAPE_COLORS = {"matte": "#a7f", "detail": "#a7f", "SAM fallback": "#f55", "seed": "#fff", "refine": "#fd4"}
 ROW = 16
 
 
@@ -148,8 +152,11 @@ def runs_of[T](values: list[T], first: int) -> list[tuple[int, int, T]]:
     return found
 
 
-def timeline(first: int, end: int, flags: list[dict], ball, held: list, picks: dict[str, int]) -> str:
-    """A strip with one column per frame: ball source, holder, then one row per QC flag, with the picks marked.
+def timeline(
+    first: int, end: int, flags: list[dict], ball, held: list, shape: Matte | Detail | None, picks: dict[str, int]
+) -> str:
+    """A strip with one column per frame: ball source, holder, the source of his shape, then one row per QC flag,
+    with the picks marked.
 
     The labels sit in their own HTML column, so the frames fill the strip's width however short the clip.
     """
@@ -179,6 +186,13 @@ def timeline(first: int, end: int, flags: list[dict], ball, held: list, picks: d
         )
     holder_spans = [span for span in runs_of(held[first:end], first) if span[2] is not None]
     row("holder", [(a, b, f"rgb{TINTS[h % len(TINTS)]}", f"{h} {a}-{b}") for a, b, h in holder_spans])
+    if shape is not None:
+        name = "matte" if isinstance(shape, Matte) else "detail"
+        sources = ["SAM fallback" if fell else name for fell in shape.fallback]
+        marks = [(f, f, SHAPE_COLORS["seed"], f"seed {f}") for f in shape.seeds.tolist()]
+        if isinstance(shape, Detail):
+            marks += [(f, f, SHAPE_COLORS["refine"], f"refine {f}") for f in shape.refines.tolist()]
+        row(name, [(a, b, SHAPE_COLORS[s], f"{s} {a}-{b}") for a, b, s in runs_of(sources, shape.first)] + marks)
     for f in flags:
         a, b = max(f["frames"][0], first), min(f["frames"][1], end - 1)
         objects = " and ".join(map(str, f["objects"])) or "none"
@@ -252,6 +266,13 @@ def main() -> None:
     if track is not None:
         masks[:, kinds.index("ball")] = raw_ball
         ball = track, track.shown()
+    shape = (
+        Matte.load(Path(render["matte"]))
+        if "matte" in render
+        else Detail.load(Path(render["detail"]))
+        if "detail" in render
+        else None
+    )
     moments = {"first": first, "release": release, "ball at rim": rim, "last": end - 1}
     picks = {name: frame for name, frame in moments.items() if frame is not None and first <= frame < end}
     out = folder / "review"
@@ -275,7 +296,7 @@ def main() -> None:
         )
     page = PAGE.format(
         title=html.escape(folder.name),
-        timeline=timeline(first, end, flags, ball, held, picks),
+        timeline=timeline(first, end, flags, ball, held, shape, picks),
         stills="".join(cells),
         fps=FPS,
         row=ROW * 2,

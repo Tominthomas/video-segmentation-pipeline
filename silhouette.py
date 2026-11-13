@@ -7,6 +7,11 @@ or "full" (the whole frame, pillarboxed in black to 16:9, for portrait sources t
 "zoom" sets the window to 1/zoom of the frame width for "ball" and "holder" (default 2).
 "frames" [first, end) renders only that slice of the clip; the crop is still planned over the whole clip.
 "mystery" lists the mystery player's object index. When it is set, every other player turns dark gray.
+"matte" is the path of his matte.npz from matte.py, and "detail" of his detail.npz from detail.py. With either, his
+layer is sampled from the source and every frame renders 720 tall; a frame either falls back on draws his SAM mask.
+With "detail", the gap between him and a ball he holds is closed (docs/SPEC.md#detail).
+With a mystery player, the ball draws in his white, so he and the ball read as one shape; "ball": "orange" keeps
+it orange. "ball_edge" draws a dark edge that many pixels wide at 720 tall where the ball overlaps him (default 0).
 The ball keeps SAM's own mask on frames where it passes ball_track's checks, so it has the real ball's shape and
 hands cover it. A short gap draws a disc on the cleaned track so the ball doesn't flicker, and a longer one leaves
 it hidden: the ball isn't the focus, and the player is. The full track still steers the crop. "ball_keys"
@@ -15,8 +20,9 @@ it hidden: the ball isn't the focus, and the player is. The full track still ste
 
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -83,6 +89,10 @@ SHOT_FRAMES = 3
 # A run of inferred ball frames up to this long is drawn as a disc so the ball doesn't blink. A longer one, such
 # as a ball lost against the crowd in flight, is left hidden.
 SHOW_GAP = 3
+# A matted or detail render's height, or the source's when that is less.
+MATTED_HEIGHT = 720
+# The ball's colours with a mystery player, by the render's "ball". White is his colour.
+BALLS = {"white": FOCUS["mystery"], "orange": FOCUS["ball"]}
 
 
 def load(path: Path, frames: list[int] | None = None) -> tuple[list[str], np.ndarray]:
@@ -256,6 +266,40 @@ def draw_ball(kinds: list[str], masks: np.ndarray, keys: list) -> Track | None:
 def hide_ball(kinds: list[str], masks: np.ndarray, track: Track) -> None:
     """Clear the ball on every frame the track doesn't show."""
     masks[~track.shown(), kinds.index("ball")] = False
+
+
+def dilate(image: np.ndarray, radius: int) -> np.ndarray:
+    """The image's max over a disk of the radius around each pixel. Only the box around its nonzero pixels is worked."""
+    out = image.copy()
+    ys, xs = np.nonzero(image)
+    if radius <= 0 or not len(ys):
+        return out
+    h, w = image.shape
+    y0, y1 = max(ys.min() - radius, 0), min(ys.max() + radius + 1, h)
+    x0, x1 = max(xs.min() - radius, 0), min(xs.max() + radius + 1, w)
+    region = out[y0:y1, x0:x1]
+    src = np.pad(image[y0:y1, x0:x1], radius)
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            if dy * dy + dx * dx <= radius * radius:
+                shifted = src[radius + dy : radius + dy + y1 - y0, radius + dx : radius + dx + x1 - x0]
+                np.maximum(region, shifted, out=region)
+    return out
+
+
+def erode(mask: np.ndarray, radius: int) -> np.ndarray:
+    """The mask shrunk by a disk of the radius. Past the frame's edge counts as inside, so a player the edge cuts
+    keeps his core there."""
+    out = np.zeros_like(mask)
+    ys, xs = np.nonzero(mask)
+    if radius <= 0 or not len(ys):
+        return mask.copy()
+    h, w = mask.shape
+    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+    edges = ((y0 == 0, y1 == h), (x0 == 0, x1 == w))
+    sub = np.pad(mask[y0:y1, x0:x1], radius, constant_values=edges)
+    out[y0:y1, x0:x1] = ~dilate(~sub, radius)[radius:-radius, radius:-radius]
+    return out
 
 
 def boxes_of(masks: np.ndarray) -> list[tuple[int, int, int, int] | None]:
@@ -443,21 +487,104 @@ def windows(
     return (out_w, int(out_w / ASPECT)), glide(targets, w, h)
 
 
-def layers(kinds: list[str], mystery: list[int]) -> list[tuple[int, tuple[int, int, int]]]:
-    """Each object's index and color, in draw order. Without a mystery player, manifest order in COLORS."""
+def layers(
+    kinds: list[str], mystery: list[int], ball: tuple[int, int, int] = FOCUS["ball"]
+) -> list[tuple[int, tuple[int, int, int]]]:
+    """Each object's index and color, in draw order, the ball in the given color. Without a mystery player, manifest
+    order in COLORS."""
     if not mystery:
         return [(i, COLORS[kind]) for i, kind in enumerate(kinds)]
     roles = ["mystery" if i in mystery else kind for i, kind in enumerate(kinds)]
-    return [(i, color) for role, color in FOCUS.items() for i, r in enumerate(roles) if r == role]
+    colors = {**FOCUS, "ball": ball}
+    return [(i, colors[role]) for role in FOCUS for i, r in enumerate(roles) if r == role]
 
 
-def smooth_edges(mask: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+def smooth_edges(mask: np.ndarray, size: tuple[int, int], blur: float = EDGE_BLUR) -> np.ndarray:
     """A 0..1 coverage map of the mask at output size, with smooth anti-aliased edges."""
     if not mask.any():
         return np.zeros((size[1], size[0]), dtype=np.float32)
     soft = Image.fromarray(mask.astype(np.uint8) * 255).resize(size, Image.Resampling.BILINEAR)
-    soft = np.asarray(soft.filter(ImageFilter.GaussianBlur(EDGE_BLUR)), dtype=np.float32) / 255
+    soft = np.asarray(soft.filter(ImageFilter.GaussianBlur(blur)), dtype=np.float32) / 255
     return np.clip((soft - 0.5) / EDGE_RAMP + 0.5, 0, 1)
+
+
+def ball_edge(ball: np.ndarray, him: np.ndarray, width: float) -> np.ndarray:
+    """The dark edge drawn under the ball where it overlaps him: the ball grown by width pixels, a fractional width
+    anti-aliased, over his coverage."""
+    solid = ball >= 0.5
+    ys, xs = np.nonzero(solid)
+    if width <= 0 or not len(ys):
+        return np.zeros_like(ball)
+    reach = int(np.ceil(width + 0.5))
+    h, w = ball.shape
+    y0, y1 = max(ys.min() - reach, 0), min(ys.max() + reach + 1, h)
+    x0, x1 = max(xs.min() - reach, 0), min(xs.max() + reach + 1, w)
+    src = np.pad(solid[y0:y1, x0:x1], reach).astype(np.float32)
+    grown = np.zeros((y1 - y0, x1 - x0), np.float32)
+    for dy in range(-reach, reach + 1):
+        for dx in range(-reach, reach + 1):
+            weight = min(max(width + 0.5 - float(np.hypot(dy, dx)), 0.0), 1.0)
+            if weight:
+                shifted = src[reach + dy : reach + dy + y1 - y0, reach + dx : reach + dx + x1 - x0]
+                np.maximum(grown, weight * shifted, out=grown)
+    edge = np.zeros_like(ball)
+    edge[y0:y1, x0:x1] = np.maximum(grown, ball[y0:y1, x0:x1])
+    return np.minimum(edge, him)
+
+
+def close_gap(him: np.ndarray, ball: np.ndarray, radius: int) -> np.ndarray:
+    """His coverage at output size with the gap between him and the ball filled where the ball is within radius of
+    him, so the two read as one shape."""
+    ys, xs = np.nonzero(ball >= 0.5)
+    if radius <= 0 or not len(ys):
+        return him
+    h, w = him.shape
+    y0, y1 = max(ys.min() - 3 * radius, 0), min(ys.max() + 3 * radius + 1, h)
+    x0, x1 = max(xs.min() - 3 * radius, 0), min(xs.max() + 3 * radius + 1, w)
+    near = dilate(ball[y0:y1, x0:x1] >= 0.5, radius)
+    if not (him[y0:y1, x0:x1][near] >= 0.5).any():
+        return him
+    both = np.maximum(him[y0:y1, x0:x1], ball[y0:y1, x0:x1])
+    closed = 1 - dilate(1 - dilate(both, radius), radius)
+    out = him.copy()
+    out[y0:y1, x0:x1] = np.where(near, np.maximum(him[y0:y1, x0:x1], closed), him[y0:y1, x0:x1])
+    return out
+
+
+def paint(region: np.ndarray, color: tuple[int, int, int], alpha: np.ndarray) -> None:
+    region += (np.asarray(color, dtype=np.float32) - region) * alpha[..., None]
+
+
+def others_of(kinds: list[str], masks: np.ndarray, mystery: int) -> np.ndarray:
+    """The union of every other player's mask in one frame's [object, h, w] masks."""
+    players = [i for i, kind in enumerate(kinds) if kind == "player" and i != mystery]
+    return masks[players].any(axis=0) if players else np.zeros(masks.shape[1:], bool)
+
+
+class Shape(NamedTuple):
+    """His matte or detail pass as the render draws it. layer(frame, his, others, box, size) is his alpha over the
+    window box in clip pixels at size, given his mask and the other players' union. ball_gap is how far apart, in
+    pixels at 720 tall, he and the ball may be for the gap between them to close."""
+
+    data: Any
+    layer: Callable[[int, np.ndarray, np.ndarray, tuple[int, int, int, int], tuple[int, int]], np.ndarray]
+    ball_gap: int
+
+
+def load_shape(render: dict) -> Shape | None:
+    """His matte or detail pass named in the render spec, or None when his SAM mask draws him. matte.py and detail.py
+    import this module, so each loads only for a render that uses it."""
+    if "matte" in render:
+        from matte import Matte  # noqa: PLC0415
+
+        matte = Matte.load(Path(render["matte"]))
+        return Shape(matte, lambda frame, his, _, box, size: matte.window_alpha(frame, his, box, size), 0)
+    if "detail" in render:
+        from detail import BALL_GAP, Detail  # noqa: PLC0415
+
+        detail = Detail.load(Path(render["detail"]))
+        return Shape(detail, detail.layer, BALL_GAP)
+    return None
 
 
 def main() -> None:
@@ -469,19 +596,46 @@ def main() -> None:
     size, crops = windows(kinds, masks, render, track)
     if track:
         hide_ball(kinds, masks, track)
+    shaped = load_shape(render)
+    # A matted or detail render draws at MATTED_HEIGHT, so his edge keeps the source's detail instead of being drawn
+    # at the crop's size and scaled up. Otherwise frames render at the crop's size.
+    scale = min(MATTED_HEIGHT, shaped.data.source[1]) / size[1] if shaped else 1.0
+    canvas = (round(size[0] * scale) // 2 * 2, round(size[1] * scale)) if shaped else size
     # Only "full" crops narrower than the output; it renders at native size and centers in the black.
-    inner = (min(masks.shape[3], size[0]), size[1])
-    left = (size[0] - inner[0]) // 2
+    native = min(masks.shape[3], size[0])
+    inner = (canvas[0] if native == size[0] else round(native * scale), canvas[1])
+    left = (canvas[0] - inner[0]) // 2
     out_dir.mkdir(parents=True, exist_ok=True)
     first, end = render.get("frames", (0, len(crops)))
-    order = layers(kinds, render.get("mystery", []))
+    mystery = render.get("mystery", [])
+    ball = render.get("ball", "white")
+    if ball not in BALLS:
+        sys.exit(f'"ball" must be one of {", ".join(BALLS)}, not {ball!r}')
+    order = layers(kinds, mystery, BALLS[ball])
+    edge = render.get("ball_edge", 0) * canvas[1] / 720 if mystery else 0
+    gap = round(shaped.ball_gap * canvas[1] / 720) if shaped else 0
     for frame, (x, y, cw, ch) in enumerate(crops[first:end], start=first):
-        canvas = np.zeros((size[1], size[0], 3), dtype=np.float32)
+        image = np.zeros((canvas[1], canvas[0], 3), dtype=np.float32)
+        region = image[:, left : left + inner[0]]
+        him = None
         for i, color in order:
-            alpha = smooth_edges(masks[frame, i, y : y + ch, x : x + cw], inner)
-            region = canvas[:, left : left + inner[0]]
-            region += (np.asarray(color, dtype=np.float32) - region) * alpha[..., None]
-        Image.fromarray(canvas.round().astype(np.uint8)).save(out_dir / f"{frame - first:05d}.png")
+            if shaped and i in mystery and not shaped.data.fallback[frame - shaped.data.first]:
+                others = others_of(kinds, masks[frame], i)
+                alpha = shaped.layer(frame, masks[frame, i], others, (x, y, x + cw, y + ch), inner)
+            else:
+                alpha = smooth_edges(masks[frame, i, y : y + ch, x : x + cw], inner, EDGE_BLUR * scale)
+            if i in mystery:
+                him = alpha
+            elif kinds[i] == "ball" and him is not None:
+                if gap:
+                    closed = close_gap(him, alpha, gap)
+                    # He is painted already, so only the coverage the closing adds goes on top.
+                    paint(region, FOCUS["mystery"], np.clip((closed - him) / np.maximum(1 - him, 1e-6), 0, 1))
+                    him = closed
+                if edge:
+                    paint(region, (0, 0, 0), ball_edge(alpha, him, edge))
+            paint(region, color, alpha)
+        Image.fromarray(image.round().astype(np.uint8)).save(out_dir / f"{frame - first:05d}.png")
 
 
 if __name__ == "__main__":
