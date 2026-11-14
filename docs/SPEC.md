@@ -197,7 +197,7 @@ On 2026-11-14 the backfilled file reproduces every share above to the whole perc
 
 ### Encoding
 
-`silhouette.mp4` uses the shared `ENCODE` in `clips.py`: libx264, preset medium, CRF 20, yuv420p and a keyframe every 15 frames. A test on 2026-11-14 tried to use the unused byte budget for sharper edges. It did not change the encode, because there is no budget to use.
+`silhouette.mp4` uses the shared `ENCODE` in `clips.py`: libx264, preset medium, CRF 20, yuv420p and a keyframe every 15 frames. A test on 2026-11-14 tried to use the unused byte budget for sharper edges. It did not change the encode. Every library render would fit the limit at CRF 16, but a 20-second render, the longest a clip is planned to run, has no budget to spare.
 
 **Method.** Eight library clips, 118 to 450 frames, wide and close, were each drawn once by `silhouette.py`. Each set of lossless PNG frames was then encoded with 20 settings: CRF 22 to 14 with preset medium or slow, each with and without `-tune animation`. Each encode was compared with its PNGs in RGB by PSNR, by SSIM and by PSNR on a 3-pixel band around the edges. x264 is deterministic, so a second encode gave the same bytes, and the only spread is between clips.
 
