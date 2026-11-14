@@ -178,6 +178,17 @@ class ShapeRecipes(unittest.TestCase):
         self.edit("detail.py", "class Detail(NamedTuple):", "@staticmethod\nclass Detail(NamedTuple):")
         self.build()
         self.assertEqual(self.runs[6:], ["detail_step"])
+        self.edit("matte.py", "def frame_map(", "READY = print()\n\n\ndef frame_map(")
+        self.build()
+        self.assertEqual(self.runs[7:], ["detail_step", "matte_step"])
+
+    def test_a_method_the_model_step_calls_re_runs_it_after_any_module_statement(self):
+        guard = 'if __name__ == "__main__":'
+        self.edit("detail.py", guard, 'np.seterr(invalid="ignore")\n\n\n' + guard)
+        self.build()
+        self.edit("detail.py", "**self._asdict())", "**self._asdict(), first=999)")
+        self.build()
+        self.assertEqual(self.runs, ["detail_step", "matte_step", "detail_step"])
 
 
 if __name__ == "__main__":

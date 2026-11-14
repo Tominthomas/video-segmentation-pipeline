@@ -436,6 +436,9 @@ def definitions(path: Path) -> dict[str, list[ast.AST]]:
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             names = [n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)]
+            # A call runs on import whether or not its name is reached, so it counts like any other statement.
+            if node.value and any(isinstance(n, ast.Call) for n in ast.walk(node.value)):
+                names.append(INIT)
         elif isinstance(node, ast.ImportFrom) and all(alias.name != "*" for alias in node.names):
             names = [alias.asname or alias.name for alias in node.names]
         elif ast.unparse(node).startswith("if __name__ == '__main__':"):
@@ -500,7 +503,7 @@ def model_code(script: Path, entry: str) -> str:
         return ast.unparse(node)
 
     todo = [(script.stem, entry)]
-    while todo:
+    while todo := todo or [key for key in methods if key[1].split(".")[1] in attributes and key not in seen]:
         module, name = todo.pop()
         if (module, name) in seen:
             continue
@@ -511,8 +514,6 @@ def model_code(script: Path, entry: str) -> str:
         found = [methods[module, name]] if (module, name) in methods else modules[module].get(name, [])
         if found:
             reached[module, name] = "\n".join(reach(node, module, name) for node in found)
-        if not todo:
-            todo = [key for key in methods if key[1].split(".")[1] in attributes and key not in seen]
     return hashlib.sha256(json.dumps(sorted(reached.items())).encode()).hexdigest()
 
 
