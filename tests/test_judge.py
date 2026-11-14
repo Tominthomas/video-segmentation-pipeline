@@ -9,7 +9,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from judge import THRESHOLDS, Measured, Verdict, agrees, passing_ranges, precision  # noqa: E402
+from judge import THRESHOLDS, Measured, Verdict, agrees, passing_ranges, precision, shown  # noqa: E402
 
 
 def measured(height=0.3, ghosting=0.0, fallback=0.0, frames=100) -> Measured:
@@ -22,14 +22,14 @@ def measured(height=0.3, ghosting=0.0, fallback=0.0, frames=100) -> Measured:
     return Measured(height, ghost, fell)
 
 
-def verdict(won: bool, *rules: str) -> Verdict:
-    return Verdict(won, "blind", rules, "")
+def verdict(winner: str, *rules: str) -> Verdict:
+    return Verdict(winner, "blind", rules, "")
 
 
 # Like the spec's Houston and cle-self-lob clips: a matte that won at 26% tall and 10% ghosting, and one that lost
 # at 23% tall and 30% ghosting.
-WON = (verdict(True, "auto", "matte qc"), measured(0.26, ghosting=0.10))
-LOST = (verdict(False, "auto", "matte qc"), measured(0.23, ghosting=0.30))
+WON = (verdict("matte", "auto", "matte qc"), measured(0.26, ghosting=0.10))
+LOST = (verdict("sam", "auto", "matte qc"), measured(0.23, ghosting=0.30))
 
 
 class Verdicts(unittest.TestCase):
@@ -43,11 +43,11 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(agrees(*LOST, moved)["auto"], True)
 
     def test_a_verdict_is_checked_only_by_the_rules_it_rests_on(self):
-        unseen = verdict(False)
+        unseen = verdict("sam")
         self.assertEqual(agrees(unseen, measured(0.8), THRESHOLDS), {})
 
     def test_fallback_alone_can_fail_a_matte(self):
-        self.assertEqual(agrees(verdict(False, "matte qc"), measured(fallback=0.06), THRESHOLDS), {"matte qc": True})
+        self.assertEqual(agrees(verdict("sam", "matte qc"), measured(fallback=0.06), THRESHOLDS), {"matte qc": True})
 
 
 class Ranges(unittest.TestCase):
@@ -60,8 +60,12 @@ class Ranges(unittest.TestCase):
     def test_ghost_frame_passes_below_the_ghost_share_of_a_bad_frame(self):
         self.assertEqual(passing_ranges("GHOST_FRAME", [WON, LOST]), [("[", 0.0, 0.5, ")")])
 
+    def test_a_printed_range_rounds_inward_so_every_value_shown_passes(self):
+        self.assertEqual(shown(("[", 0.0971, 0.26271, ")")), "[0.098, 0.262]")
+        self.assertEqual(shown(("(", 0.23, 0.26, "]")), "(0.230, 0.260]")
+
     def test_verdicts_that_contradict_give_no_range(self):
-        backwards = (verdict(False, "auto"), measured(0.40))
+        backwards = (verdict("detail", "auto"), measured(0.40))
         self.assertEqual(passing_ranges("DETAIL_BELOW", [WON, backwards]), [])
 
 

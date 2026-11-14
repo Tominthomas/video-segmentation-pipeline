@@ -26,7 +26,6 @@ from silhouette import dilate, erode, load, others_of, runs, shapes
 FPS = 30
 # "auto" takes the detail pass when his median box is under this share of the clip's height, the matte otherwise.
 # Nembhard's wide clips are 18 to 20% and his close clip 40%. McDaniels' Houston clip, whose matte won, is 26%.
-# judge.py checks it against every verdict in judgments.json (docs/SPEC.md#judgments).
 DETAIL_BELOW = 0.24
 # Widths as a share of his median height in clip pixels: his box's padding in a prompt, how far past his 720p mask
 # he may reach, and how far inside it he is solid.

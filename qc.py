@@ -40,7 +40,6 @@ MISSING_RUN = 10
 EDGE = 8
 # Set from five McDaniels clips and Nembhard's six (docs/SPEC.md#matting). Of the McDaniels mattes, the Houston one
 # won blind judging with 10% of frames ghosting, and the ones that lost had 26 to 66%. Nembhard's close clip had 2%.
-# judge.py checks all three against every verdict in judgments.json (docs/SPEC.md#judgments).
 GHOST_FRAME = 0.05
 MATTE_GHOSTING = 0.2
 MATTE_FALLBACK = 0.05

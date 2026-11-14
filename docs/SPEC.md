@@ -177,23 +177,23 @@ Each points the review at a frame to look at with `crops --detail` and maybe fix
 
 | Key | Holds |
 |---|---|
-| `verdict.matte` | `"won"` or `"lost"`: whether his matte beat the other shapes |
+| `verdict.winner` | the shape that won: `"matte"`, `"detail"` or `"sam"` |
 | `verdict.how` | how the verdict was found, such as `"blind judging, 2026-11-12"` |
 | `verdict.rests_on` | the rules it is evidence for: `"auto"`, the shape `"auto"` picks, and `"matte qc"`, the two matte flags |
 | `verdict.evidence` | the evidence in words |
 | `flags` | `qc.json`'s flags, each with `"real"`: `true`, `false`, or `null` until a review labels it |
 
-A verdict that rests on `"auto"` is right when `"auto"` picks the matte exactly when it won. One that rests on `"matte qc"` is right when neither matte flag fires exactly when it won. `den-block` rests on neither, because no measure sees why its matte lost.
+A verdict that rests on `"auto"` is right when `"auto"` picks the matte exactly when it won. `"auto"` picks only the matte or the detail pass, so a verdict that SAM won is right under it when it avoids the matte. One that rests on `"matte qc"` is right when neither matte flag fires exactly when it won. `den-block` rests on neither, because no measure sees why its matte lost.
 
 **Run.** `.venv/bin/python judge.py <judgments.json> <manifest> [...] [--clips DIR]`. It reads each judged clip's mystery player from the manifests, and his masks and matte from `masks.npz` and `matte.npz`, over the frames the matte covers. It writes nothing. It prints:
 
 - per verdict, his height share, the ghosting and fallback shares, and whether today's thresholds give it
-- per threshold, the values that give every verdict with the others at today's values
+- per threshold, the values that give every verdict with the others at today's values, rounded inward to three decimals so every value shown passes
 - per QC check, its flags labelled real, false and unlabelled, and its precision over the labelled ones
 
 It exits 1 when today's thresholds get a verdict wrong.
 
-On 2026-11-14 the backfilled file reproduces every share above and gets no verdict wrong. `DETAIL_BELOW` holds from just over 0.228 to 0.261, `GHOST_FRAME` from 0.024 to under 0.064, and `MATTE_GHOSTING` from 0.097 to under 0.263. `MATTE_FALLBACK` can take any value from 0 to 1, because `den-iso`, the one clip that falls back on more than 5%, also ghosts on 66%. No verdict yet needs the fallback check. The Nembhard wide clips are recorded as matte losses from the detail pass's prototyping, not blind judging.
+On 2026-11-14 the backfilled file reproduces every share above to the whole percent and gets no verdict wrong. `DETAIL_BELOW` holds from 0.229 to 0.261, `GHOST_FRAME` from 0.025 to 0.063, and `MATTE_GHOSTING` from 0.097 to 0.262. `MATTE_FALLBACK` can take any value from 0 to 1, because `den-iso`, the one clip that falls back on more than 5%, also ghosts on 66%. No verdict yet needs the fallback check. The four McDaniels losses are SAM wins, because Tomin kept their approved SAM renders. The Nembhard wide clips are recorded as detail wins from the detail pass's prototyping, not blind judging.
 
 ## Tooling
 
