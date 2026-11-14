@@ -1,0 +1,35 @@
+name: python
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+        with:
+          version: "0.17.4"
+          args: check
+      - run: ruff format --check
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      # numpy and Pillow match the project venv, so their types are checked. SAM's and MatAnyone 2's stacks are too big
+      # to install here; pyproject.toml lets their imports go unresolved.
+      - run: python3 -m pip install numpy==2.5.4 pillow==13.0.0 ty==0.0.100
+      - run: ty check --python "$(command -v python3)"
+      - run: python3 -m unittest discover tests
+      - run: python3 clips.py --help

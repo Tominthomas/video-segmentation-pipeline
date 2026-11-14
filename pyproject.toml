@@ -1,0 +1,39 @@
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+	"E",
+	"F",
+	"I",
+	"B",
+	"UP",
+	"SIM",
+	"ERA",
+	"ARG",
+	"BLE",
+	"C4",
+	"C90",
+	"PIE",
+	"RET",
+	"RUF",
+	"PTH",
+	"PL",
+	"FURB",
+	"PERF",
+]
+# Inline numeric thresholds read better than named constants here, and the drawing helpers take many plain arguments.
+ignore = ["PLR2004", "PLR0913", "PLR0917"]
+
+[tool.ruff.lint.mccabe]
+# qc.flags is a table of checks and track.preview one pass per frame.
+max-complexity = 14
+
+[tool.ruff.lint.per-file-ignores]
+# Artifacts.make calls each build lambda before it returns, so no lambda outlives its loop turn.
+"clips.py" = ["B023"]
+
+[tool.ty.analysis]
+# CI installs only numpy and Pillow. SAM's and MatAnyone 2's stacks are gigabytes, so their imports type as Any there.
+allowed-unresolved-imports = ["torch", "torchvision.**", "sam2.**", "matanyone2.**"]
