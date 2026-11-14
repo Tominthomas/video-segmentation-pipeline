@@ -58,7 +58,7 @@ A second benchmark the same day asked whether another number format or Apple's M
 | MLX float32, `mlx-sam` 0.2.0 | 127.1 s, 124.5 to 128.7 | median IoU 0.946, 10th percentile 0.854 |
 | MLX with float16 weights and memory | 96.7 s, 94.4 to 104.5 | median IoU 0.946, 10th percentile 0.854 |
 
-Nothing beats bfloat16. Float16 and the faster MLX variant land inside its range of times, and float32 takes twice as long. MLX also moves his edge about as far as SAM 2.1 tiny does. Part of that comes from the port resizing frames with a different filter, not from the arithmetic. The MLX port's code carries no license. Tracking stays on PyTorch in bfloat16.
+Nothing beats bfloat16. Float16 and the faster MLX variant land inside its range of times, and float32 takes twice as long. MLX also moves his edge about as far as SAM 2.1 tiny does. Part of that comes from the port resizing frames with a different filter, not from the arithmetic. No license was found for the MLX port's code. Tracking stays on PyTorch in bfloat16.
 
 ### Matting
 
