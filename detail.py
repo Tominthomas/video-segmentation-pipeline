@@ -49,9 +49,18 @@ AVOID_AREA = 20
 MIN_IOU = 0.3
 
 
-def choose(share: float) -> str:
-    """The pass "auto" picks for a mystery player whose median height is this share of the clip's."""
-    return "detail" if share < DETAIL_BELOW else "matte"
+def choose(share: float, below: float = DETAIL_BELOW) -> str:
+    """The pass "auto" picks for a mystery player whose median height is this share of the clip's. judge.py passes
+    other values of below to find which ones still agree with every judged clip."""
+    return "detail" if share < below else "matte"
+
+
+def height_share(masks: np.ndarray, mystery: int, frames: list[int] | None) -> float:
+    """His median box height over the render's [first, end) frames, or every frame without them, as a share of the
+    clip's height. 0 when he is never visible there."""
+    first, end = frames or (0, len(masks))
+    _, box, _ = shapes(masks[first:end, mystery])
+    return float(np.nanmedian(box[:, 3] - box[:, 1])) / masks.shape[2] if not np.isnan(box).all() else 0.0
 
 
 def scale(clip: tuple[int, int], source: tuple[int, int]) -> tuple[float, float]:
@@ -335,9 +344,7 @@ def run_model(crops: np.ndarray, prompted: dict[int, dict]) -> np.ndarray:
 
 def choose_main(masks_path: Path, spec: dict, out: Path) -> None:
     _, masks = load(masks_path)
-    first, end = spec["frames"] or (0, len(masks))
-    _, box, _ = shapes(masks[first:end, spec["mystery"]])
-    share = float(np.nanmedian(box[:, 3] - box[:, 1])) / masks.shape[2] if not np.isnan(box).all() else 0.0
+    share = height_share(masks, spec["mystery"], spec["frames"])
     out.write_text(json.dumps({"shape": choose(share), "share": share}))
 
 

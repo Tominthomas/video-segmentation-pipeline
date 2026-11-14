@@ -24,7 +24,7 @@ A clip with one mystery player draws his shape one of three ways, set by `"shape
 | `"detail"` | his own SAM pass on a zoomed crop, see [Detail](#detail) | he is small, as in a broadcast's wide angle |
 | `"sam"` | his mask in `masks.npz` | either struggles, or neither is installed |
 
-`"auto"`, the default, picks `"detail"` when his median box in `masks.npz` over the render's frames is under 24% of the clip's height and `"matte"` otherwise. Nembhard's five wide clips measure 18 to 20% and his close clip 40%. McDaniels' Houston clip, whose matte won blind judging, is 26%, and `cle-self-lob`, whose matte lost, is 23%. A clip draws one of them, never two. A machine that can't run the chosen pass prints why and draws `"sam"`.
+`"auto"`, the default, picks `"detail"` when his median box in `masks.npz` over the render's frames is under 24% of the clip's height and `"matte"` otherwise. Nembhard's five wide clips measure 18 to 20% and his close clip 40%. McDaniels' Houston clip, whose matte won blind judging, is 26%, and `cle-self-lob`, whose matte lost, is 23%. [Judgments](#judgments) keeps these verdicts as data and scores the threshold against them. A clip draws one of them, never two. A machine that can't run the chosen pass prints why and draws `"sam"`.
 
 ### Approve
 
@@ -88,7 +88,7 @@ Two looks were tried and not built. His matte drawn over the ball claims 60 to 7
 
 **QC.** `qc.py` adds two clip-wide flags from `matte.npz`. `matte fallback` flags when more than 5% of matted frames fell back to SAM. `matte ghosting` flags when more than 20% of matted frames have the raw matte leaving over 5% of his SAM core under 0.5. Either flag means the matte struggled, and the review should compare it with `"shape": "detail"` and `"shape": "sam"`.
 
-The thresholds come from blind judging on 2026-11-12. The McDaniels matte that won, Houston, ghosts on 10% of frames. Three that lost ghost on 26 to 66%: `lac-pnr-dunk`, `den-iso` and `cle-self-lob`. `den-iso` also falls back on 6%. Nembhard's close clip, where the matte won 14 of 14 frames, ghosts on 2%. The fourth loser, `den-block`, passes both checks. He fills most of its frame, so the crop is the whole source and the matte adds little over SAM, and no measure here sees that.
+The thresholds come from blind judging on 2026-11-12. The McDaniels matte that won, Houston, ghosts on 10% of frames. Three that lost ghost on 26 to 66%: `lac-pnr-dunk`, `den-iso` and `cle-self-lob`. `den-iso` also falls back on 6%. Nembhard's close clip, where the matte won 14 of 14 frames, ghosts on 2%. The fourth loser, `den-block`, passes both checks. He fills most of its frame, so the crop is the whole source and the matte adds little over SAM, and no measure here sees that. [Judgments](#judgments) scores both thresholds against these verdicts.
 
 **Install.** MatAnyone 2 lives outside the checkout in `~/.local/share/bagwork/matte/`, so every worktree on a machine shares one copy. Its own venv keeps OpenCV, SciPy and a non-commercial package out of `.venv`. Its `pyproject.toml` fails to build a wheel at the pinned commit, so it installs editable from a checkout.
 
@@ -169,6 +169,31 @@ Each points the review at a frame to look at with `crops --detail` and maybe fix
 
 **How `silhouette.py` reads it.** `clips.py` passes its path as `"detail"` in the render spec. His layer is the owned alpha, sampled from source pixels to the output like the matte's, at 720 tall. A fallback frame draws his mask from `masks.npz`. The ball's gap is closed as above.
 
+### Judgments
+
+`DETAIL_BELOW`, `GHOST_FRAME`, `MATTE_GHOSTING` and `MATTE_FALLBACK` each rest on a few human verdicts. `judge.py` keeps those verdicts as data and scores the thresholds against them, so a change to a threshold says at once which verdicts it breaks.
+
+**`judgments.json`.** Clip ids name the player, so it lives at `$BAGWORK_CONTENT/judgments.json`, never in the repo. It is `{"clips": {<id>: {"verdict"?, "flags"?}}}`.
+
+| Key | Holds |
+|---|---|
+| `verdict.winner` | the shape that won: `"matte"`, `"detail"` or `"sam"` |
+| `verdict.how` | how the verdict was found, such as `"blind judging, 2026-11-12"` |
+| `verdict.rests_on` | the rules it is evidence for: `"auto"`, the shape `"auto"` picks, and `"matte qc"`, the two matte flags |
+| `verdict.evidence` | the evidence in words |
+| `flags` | `qc.json`'s flags, each with `"real"`: `true`, `false`, or `null` until a review labels it |
+
+A verdict that rests on `"auto"` is right when `"auto"` picks the matte exactly when it won. `"auto"` picks only the matte or the detail pass, so a verdict that SAM won is right under it when it avoids the matte. One that rests on `"matte qc"` is right when neither matte flag fires exactly when it won. `den-block` rests on neither, because no measure sees why its matte lost.
+
+**Run.** `.venv/bin/python judge.py <judgments.json> <manifest> [...] [--clips DIR]`. It reads each judged clip's mystery player from the manifests, and his masks and matte from `masks.npz` and `matte.npz`, over the frames the matte covers. It writes nothing. It prints:
+
+- per verdict, his height share, the ghosting and fallback shares, and whether today's thresholds give it
+- per threshold, the values that give every verdict with the others at today's values, rounded inward to three decimals so every value shown passes
+- per QC check, its flags labelled real, false and unlabelled, and its precision over the labelled ones
+
+It exits 1 when today's thresholds get a verdict wrong.
+
+On 2026-11-14 the backfilled file reproduces every share above to the whole percent and gets no verdict wrong. `DETAIL_BELOW` holds from 0.229 to 0.261, `GHOST_FRAME` from 0.025 to 0.063, and `MATTE_GHOSTING` from 0.097 to 0.262. `MATTE_FALLBACK` can take any value from 0 to 1, because `den-iso`, the one clip that falls back on more than 5%, also ghosts on 66%. No verdict yet needs the fallback check. The four McDaniels losses are SAM wins, because Tomin kept their approved SAM renders. The Nembhard wide clips are recorded as detail wins from the detail pass's prototyping, not blind judging.
 
 ## Tooling
 

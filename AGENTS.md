@@ -11,6 +11,7 @@ python3 -m unittest discover tests
 python3 clips.py --help
 python3 clips.py build [--manifest FILE] [id ...]
 python3 clips.py approve [--manifest FILE] id ...
+.venv/bin/python judge.py $BAGWORK_CONTENT/judgments.json MANIFEST ...
 ```
 
 Run the four checks before every commit. `build` with a `track` entry needs the SAM venv the README's Silhouettes section sets up. Matting and SAM runs are heavy, so run one at a time and check `memory_pressure` first.

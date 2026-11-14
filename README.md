@@ -39,6 +39,8 @@ SAM2_BUILD_CUDA=0 .venv/bin/pip install "git+https://github.com/facebookresearch
 
 The `track` entry also picks the crop: `"follow": "holder"` (the player with the ball; at the release it eases out to keep the shooter and the hoop in frame), `"ball"`, or `"action"` (every player and the hoop, the default), with `"zoom"` (default 2) for the first two.
 
+Before changing a threshold in `detail.py` or `qc.py`, score it against the recorded verdicts with `.venv/bin/python judge.py $BAGWORK_CONTENT/judgments.json <manifest> ...`. It says which verdicts the change breaks. [docs/SPEC.md](docs/SPEC.md#judgments) has the file's format.
+
 ## The render contract
 
 Bagwork takes a render through `bagwork clips add <manifest> --renders <folder>` in the bagwork repo, which reads each manifest entry's `id`, `player`, `title`, `url`, `start` and `end` and uploads `<folder>/<id>.mp4`. `tools/bagwork/library.ts` there refuses a render unless all of these hold:

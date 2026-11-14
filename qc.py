@@ -141,17 +141,19 @@ def ghosting(matte: Matte, sam: np.ndarray) -> np.ndarray:
     return shares
 
 
+def matte_shares(ghost: np.ndarray, fallback: np.ndarray, ghost_frame: float = GHOST_FRAME) -> dict[str, float]:
+    """What the clip-wide matte flags measure, from ghosting()'s per-frame shares and the matte's fallback frames.
+    judge.py passes other values of ghost_frame to find which ones still agree with every judged clip."""
+    return {"matte fallback": float(fallback.mean()), "matte ghosting": float((ghost > ghost_frame).mean())}
+
+
 def matte_flags(matte: Matte, sam: np.ndarray) -> list[dict]:
     """The clip-wide matte flags, given his [frame, h, w] SAM masks."""
     span = [matte.first, matte.first + len(matte.alpha) - 1]
-    measures = {
-        "matte fallback": float(matte.fallback.mean()),
-        "matte ghosting": float((ghosting(matte, sam) > GHOST_FRAME).mean()),
-    }
     limits = {"matte fallback": MATTE_FALLBACK, "matte ghosting": MATTE_GHOSTING}
     return [
         {"check": check, "objects": [], "frames": span, "worst": round(value, 2)}
-        for check, value in measures.items()
+        for check, value in matte_shares(ghosting(matte, sam), matte.fallback).items()
         if value > limits[check]
     ]
 
