@@ -2,7 +2,7 @@
 """Fetch NBA highlight clips and render Bagwork's filtered variants.
 
   python3 clips.py scout <url>                         frames every second, to pick start/end
-  python3 clips.py add [--manifest FILE] <url> --player NAME [--id ID]   scout, then add a manifest stub
+  python3 clips.py add --manifest FILE <url> --player NAME [--id ID]   scout, then add a manifest stub
   python3 clips.py build [--manifest FILE] [id ...]    fetch, normalize, filter, verify
   python3 clips.py preview [--manifest FILE] id        each prompt's mask, before a full track
   python3 clips.py propose [--manifest FILE] id --frame N   numbered player and ball boxes to prompt by
@@ -12,7 +12,8 @@
   python3 clips.py crops [--manifest FILE] id --frames 40-70:3 --detail
                                                                 the detail pass's crops, to read detail refines off
 
-The manifest defaults to fixtures/clips.json, the public sample clips. Real puzzles keep theirs outside the repo.
+The manifest defaults to fixtures/clips.json, the public sample clips. Real puzzles keep theirs outside the repo, so
+add, which writes to the manifest, needs --manifest.
 
 Needs yt-dlp and ffmpeg on PATH. Output goes to media/, which is git-ignored.
 """
@@ -841,7 +842,12 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("scout").add_argument("url")
     add_cmd = sub.add_parser("add")
-    add_cmd.add_argument("--manifest", type=Path, default=SAMPLE_MANIFEST)
+    add_cmd.add_argument(
+        "--manifest",
+        type=Path,
+        required=True,
+        help="a real puzzle's manifest under $BAGWORK_CONTENT, or fixtures/clips.json for a public sample",
+    )
     add_cmd.add_argument("url")
     add_cmd.add_argument("--player", required=True)
     add_cmd.add_argument("--id")
