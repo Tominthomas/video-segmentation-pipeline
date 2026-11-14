@@ -152,7 +152,7 @@ def detail_tiles(clip: Path, spec: dict, frames: list[int], font) -> list[Image.
         marks = [(x, y, REFINE_COLORS[k]) for k in REFINE_COLORS for x, y in refine.get(k, [])]
         box = [ox / ratio[0], oy / ratio[1], (ox + cw) / ratio[0], (oy + ch) / ratio[1]]
         tiles.append(tile(image.round().astype(np.uint8), f, box, None, font, ratio, marks))
-        fallback = ", falls back to masks.npz" if detail.fallback[j] else ""
+        fallback = ", falls back to masks.npz" if detail.falls_back(f, owned, his) else ""
         area = max(int(mine.sum()), 1)
         agree = detail.clip_iou(f, owned, his)
         ceded, speckle = owned.ceded.sum() / area, owned.speckle.sum() / area

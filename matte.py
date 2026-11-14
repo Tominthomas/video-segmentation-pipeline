@@ -19,7 +19,7 @@ from typing import NamedTuple
 import numpy as np
 from PIL import Image, ImageFilter
 
-from silhouette import dilate, erode, load, runs, shapes, smooth
+from silhouette import dilate, erode, load, shapes, smooth
 
 FPS = 30
 # Raw mattes ghost on motion blur, so alpha is cut at LEVELS[0] and full by LEVELS[0] + LEVELS[1].
@@ -77,21 +77,27 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
 
 
 class Matte(NamedTuple):
-    """One clip's matte.npz: the raw alpha on a crop per matted frame, and where that crop sits in the source."""
+    """One clip's matte.npz: the raw alpha on a crop per matted frame, where that crop sits in the source, and his
+    median height in clip pixels. It holds only what the model and his SAM masks give, so the rules that refine it
+    and pick its fallback frames apply at render time and tuning them never re-runs the model."""
 
     alpha: np.ndarray
     first: int
     origin: np.ndarray
     crop: tuple[int, int]
     source: tuple[int, int]
-    gate: int
+    height: float
     source_frames: np.ndarray
     seeds: np.ndarray
     flashes: np.ndarray
-    fallback: np.ndarray
 
     def frames(self) -> range:
         return range(self.first, self.first + len(self.alpha))
+
+    @property
+    def gate(self) -> int:
+        """How far, in clip pixels, the matte may reach past his SAM mask and is solid inside it."""
+        return max(MIN_GATE, round(GATE * self.height))
 
     def source_alpha(self, frame: int, sam: np.ndarray) -> np.ndarray:
         """His refined alpha on clip frame frame at source size: the levels curve, limited to his SAM mask sam grown
@@ -103,18 +109,26 @@ class Matte(NamedTuple):
         full *= soften(dilate(sam, self.gate), self.source)
         return np.maximum(full, soften(erode(sam, self.gate), self.source))
 
-    def window_alpha(self, frame: int, sam: np.ndarray, box: tuple[int, int, int, int], size: tuple[int, int]):
-        """His refined alpha over the window box (x0, y0, x1, y1) in clip pixels, sampled from the source to size."""
+    def window_alpha(self, full: np.ndarray, sam: np.ndarray, box: tuple[int, int, int, int], size: tuple[int, int]):
+        """The source-size alpha full, from source_alpha, over the window box (x0, y0, x1, y1) in clip pixels,
+        sampled to size."""
         # The clip is the source scaled to 720 tall with an even width, so each axis has its own ratio.
         rx, ry = self.source[0] / sam.shape[1], self.source[1] / sam.shape[0]
         w, h = self.source
         window = (box[0] * rx, box[1] * ry, min(box[2] * rx, w), min(box[3] * ry, h))
-        return np.clip(resize(self.source_alpha(frame, sam), size, window), 0, 1)
+        return np.clip(resize(full, size, window), 0, 1)
 
-    def falls_back(self, frame: int, sam: np.ndarray) -> bool:
-        """Whether the refined alpha disagrees with SAM on the frame, at clip size."""
-        small = resize(self.source_alpha(frame, sam), sam.shape[::-1]) > 0.5
-        return iou(small, sam) < MIN_IOU
+    def layer(
+        self, frame: int, his: np.ndarray, _others: np.ndarray, box: tuple[int, int, int, int], size: tuple[int, int]
+    ) -> np.ndarray | None:
+        """His refined alpha over the window box in clip pixels at size, or None on a frame that falls back to his
+        SAM mask."""
+        full = self.source_alpha(frame, his)
+        return None if disagrees(full, his) else self.window_alpha(full, his, box, size)
+
+    def fallback(self, sam: np.ndarray) -> np.ndarray:
+        """Per matted frame, whether it falls back to his SAM mask, given his [frame, h, w] SAM masks."""
+        return np.asarray([disagrees(self.source_alpha(f, sam[f]), sam[f]) for f in self.frames()], bool)
 
     def save(self, path: Path) -> None:
         tmp = path.with_name(f".tmp-{path.name}")
@@ -125,6 +139,8 @@ class Matte(NamedTuple):
     @classmethod
     def load(cls, path: Path) -> Matte:
         data = np.load(path)
+        if "height" not in data:
+            sys.exit(f"{path} predates render-time fallback; build its clip with clips.py to remake it")
         width, height = (int(v) for v in data["crop"])
         source_w, source_h = (int(v) for v in data["source"])
         return cls(
@@ -133,12 +149,18 @@ class Matte(NamedTuple):
             origin=data["origin"],
             crop=(width, height),
             source=(source_w, source_h),
-            gate=int(data["gate"]),
+            height=float(data["height"]),
             source_frames=data["source_frames"],
             seeds=data["seeds"],
             flashes=data["flashes"],
-            fallback=data["fallback"],
         )
+
+
+def disagrees(full: np.ndarray, sam: np.ndarray) -> bool:
+    """Whether a source-size refined alpha overlaps his clip-size SAM mask under MIN_IOU, so the frame falls back to
+    SAM."""
+    small = resize(full, sam.shape[::-1]) > 0.5
+    return iou(small, sam) < MIN_IOU
 
 
 def frame_map(clip: np.ndarray, source: np.ndarray, ratio: float) -> np.ndarray:
@@ -333,17 +355,15 @@ def main() -> None:
             origin=np.zeros((end - first, 2), int),
             crop=size,
             source=size,
-            gate=MIN_GATE,
+            height=0.0,
             source_frames=source_frames,
             seeds=np.zeros(0, int),
             flashes=np.zeros(0, int),
-            fallback=np.ones(end - first, bool),
         ).save(out)
         return
     source_box = box * np.asarray([width / masks.shape[3], height / masks.shape[2]] * 2)
     crop = crop_size(source_box, size)
     origin = crop_origins(source_box, crop, size)
-    gate = max(MIN_GATE, round(GATE * float(np.nanmedian(box[:, 3] - box[:, 1]))))
     shape = model_size(crop)
     crops = read_crops(source, source_frames, origin, crop, shape)
     flash = flashes(crops.reshape(len(crops), -1).mean(axis=1))
@@ -352,7 +372,7 @@ def main() -> None:
     picked = seeds(kinds, masks, mystery, first, end)
     print(
         f"matting frames {first}-{end - 1} from {width}x{height} at {float(rate):.2f} fps: crop {crop[0]}x{crop[1]} "
-        f"at {shape[0]}x{shape[1]}, gate {gate}px, seeds {picked}, flashes {[first + j for j in flash]}",
+        f"at {shape[0]}x{shape[1]}, seeds {picked}, flashes {[first + j for j in flash]}",
         file=sys.stderr,
         flush=True,
     )
@@ -366,21 +386,13 @@ def main() -> None:
         origin=origin,
         crop=crop,
         source=size,
-        gate=gate,
+        height=float(np.nanmedian(box[:, 3] - box[:, 1])),
         source_frames=source_frames,
         seeds=np.asarray(picked),
         flashes=np.asarray([first + j for j in flash], dtype=int),
-        fallback=np.zeros(len(alpha), bool),
     )
-    fallback = np.asarray([matte.falls_back(f, masks[f, mystery]) for f in matte.frames()])
-    matte = matte._replace(fallback=fallback)
     matte.save(out)
-    fell = runs(np.flatnonzero(fallback) + first)
-    print(
-        f"  matted {len(alpha)} frames in {seconds:.0f}s from seeds {picked}; SAM fallback on {fallback.sum()}"
-        + (f" {fell}" if fell else ""),
-        flush=True,
-    )
+    print(f"  matted {len(alpha)} frames in {seconds:.0f}s from seeds {picked}", flush=True)
 
 
 if __name__ == "__main__":

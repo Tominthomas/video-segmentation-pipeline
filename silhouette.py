@@ -563,11 +563,12 @@ def others_of(kinds: list[str], masks: np.ndarray, mystery: int) -> np.ndarray:
 
 class Shape(NamedTuple):
     """His matte or detail pass as the render draws it. layer(frame, his, others, box, size) is his alpha over the
-    window box in clip pixels at size, given his mask and the other players' union. ball_gap is how far apart, in
-    pixels at 720 tall, he and the ball may be for the gap between them to close."""
+    window box in clip pixels at size, given his mask and the other players' union, or None on a frame that falls
+    back to his mask. ball_gap is how far apart, in pixels at 720 tall, he and the ball may be for the gap between
+    them to close."""
 
     data: Any
-    layer: Callable[[int, np.ndarray, np.ndarray, tuple[int, int, int, int], tuple[int, int]], np.ndarray]
+    layer: Callable[[int, np.ndarray, np.ndarray, tuple[int, int, int, int], tuple[int, int]], np.ndarray | None]
     ball_gap: int
 
 
@@ -578,7 +579,7 @@ def load_shape(render: dict) -> Shape | None:
         from matte import Matte  # noqa: PLC0415
 
         matte = Matte.load(Path(render["matte"]))
-        return Shape(matte, lambda frame, his, _, box, size: matte.window_alpha(frame, his, box, size), 0)
+        return Shape(matte, matte.layer, 0)
     if "detail" in render:
         from detail import BALL_GAP, Detail  # noqa: PLC0415
 
@@ -619,10 +620,11 @@ def main() -> None:
         region = image[:, left : left + inner[0]]
         him = None
         for i, color in order:
-            if shaped and i in mystery and not shaped.data.fallback[frame - shaped.data.first]:
+            alpha = None
+            if shaped and i in mystery:
                 others = others_of(kinds, masks[frame], i)
                 alpha = shaped.layer(frame, masks[frame, i], others, (x, y, x + cw, y + ch), inner)
-            else:
+            if alpha is None:
                 alpha = smooth_edges(masks[frame, i, y : y + ch, x : x + cw], inner, EDGE_BLUR * scale)
             if i in mystery:
                 him = alpha

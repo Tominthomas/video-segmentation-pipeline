@@ -154,10 +154,17 @@ def runs_of[T](values: list[T], first: int) -> list[tuple[int, int, T]]:
 
 
 def timeline(
-    first: int, end: int, flags: list[dict], ball, held: list, shape: Matte | Detail | None, picks: dict[str, int]
+    first: int,
+    end: int,
+    flags: list[dict],
+    ball,
+    held: list,
+    shape: Matte | Detail | None,
+    fallback: np.ndarray,
+    picks: dict[str, int],
 ) -> str:
-    """A strip with one column per frame: ball source, holder, the source of his shape, then one row per QC flag,
-    with the picks marked.
+    """A strip with one column per frame: ball source, holder, the source of his shape with the frames that fall
+    back, then one row per QC flag, with the picks marked.
 
     The labels sit in their own HTML column, so the frames fill the strip's width however short the clip.
     """
@@ -189,7 +196,7 @@ def timeline(
     row("holder", [(a, b, f"rgb{TINTS[h % len(TINTS)]}", f"{h} {a}-{b}") for a, b, h in holder_spans])
     if shape is not None:
         name = "matte" if isinstance(shape, Matte) else "detail"
-        sources = ["SAM fallback" if fell else name for fell in shape.fallback]
+        sources = ["SAM fallback" if fell else name for fell in fallback]
         marks = [(f, f, SHAPE_COLORS["seed"], f"seed {f}") for f in shape.seeds.tolist()]
         if isinstance(shape, Detail):
             marks += [(f, f, SHAPE_COLORS["refine"], f"refine {f}") for f in shape.refines.tolist()]
@@ -267,13 +274,13 @@ def main() -> None:
     if track is not None:
         masks[:, kinds.index("ball")] = raw_ball
         ball = track, track.shown()
-    shape = (
-        Matte.load(Path(render["matte"]))
-        if "matte" in render
-        else Detail.load(Path(render["detail"]))
-        if "detail" in render
-        else None
-    )
+    shape, fallback = None, np.zeros(0, bool)
+    if "matte" in render:
+        shape = Matte.load(Path(render["matte"]))
+        fallback = shape.fallback(masks[:, render["mystery"][0]])
+    elif "detail" in render:
+        shape = Detail.load(Path(render["detail"]))
+        fallback = shape.fallback(kinds, masks, render["mystery"][0])
     moments = {"first": first, "release": release, "ball at rim": rim, "last": end - 1}
     picks = {name: frame for name, frame in moments.items() if frame is not None and first <= frame < end}
     out = folder / "review"
@@ -297,7 +304,7 @@ def main() -> None:
         )
     page = PAGE.format(
         title=html.escape(folder.name),
-        timeline=timeline(first, end, flags, ball, held, shape, picks),
+        timeline=timeline(first, end, flags, ball, held, shape, fallback, picks),
         stills="".join(cells),
         fps=FPS,
         row=ROW * 2,

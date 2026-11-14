@@ -102,7 +102,8 @@ def measure(folder: Path, mystery: int) -> Measured:
     _, masks = load(folder / "masks.npz")
     matte = Matte.load(folder / "matte.npz")
     frames = [matte.first, matte.first + len(matte.alpha)]
-    return Measured(height_share(masks, mystery, frames), ghosting(matte, masks[:, mystery]), matte.fallback)
+    his = masks[:, mystery]
+    return Measured(height_share(masks, mystery, frames), ghosting(matte, his), matte.fallback(his))
 
 
 def agrees(verdict: Verdict, m: Measured, t: dict[str, float]) -> dict[str, bool]:

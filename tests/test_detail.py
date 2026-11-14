@@ -212,9 +212,9 @@ class Render(unittest.TestCase):
             height=20.0,
             seeds=np.zeros(1, int),
             refines=np.zeros(0, int),
-            fallback=np.zeros(1, bool),
         )
         alpha = detail.layer(0, clip, np.zeros_like(clip), (0, 0, 64, 36), (64, 36))
+        assert alpha is not None, "the frame draws his shape, not his mask"
         self.assertTrue((alpha[12:18, 21:29] > 0.9).all())
         self.assertFalse(alpha[:, :18].any() or alpha[:, 32:].any())
         owned = detail.owned(0, clip, np.zeros_like(clip))
