@@ -7,6 +7,8 @@
   python3 clips.py approve [--manifest FILE] id ...    check each silhouette.mp4 against Bagwork's render contract,
                                                        then copy it to $BAGWORK_CONTENT/approved/<id>.mp4
   python3 clips.py preview [--manifest FILE] id        each prompt's mask, before a full track
+  python3 clips.py window [--manifest FILE] id --frames 140-170:3 --objects 11
+                                                                objects tracked over a few frames, to check a refine
   python3 clips.py propose [--manifest FILE] id --frame N   numbered player and ball boxes to prompt by
   python3 clips.py review [--manifest FILE] id         build, then a local review.html with overlay and QC
   python3 clips.py crops [--manifest FILE] id --frames 140-160:4,171 --box x0,y0,x1,y1
@@ -771,6 +773,21 @@ def preview(clip: Clip) -> None:
         venv_step(clip, TRACK, video, {"objects": objects}, out, flags=("--preview",), slot=slot)
 
 
+def window(clip: Clip, frames: list[int], chosen: list[int]) -> None:
+    """Track the chosen objects over the span of the frames and write window.png in the clip's folder, a sheet of the
+    frames, so a refine is checked in seconds instead of a full track. It writes no masks, so masks.npz and the object
+    caches stay as they were."""
+    if not clip.track:
+        sys.exit(f"{clip.id} has no track prompts to window")
+    art, _, video = normalized(clip)
+    objects = track_objects(json.loads(clip.track), art.folder, art.ledger["clip.mp4"])
+    if unknown := [i for i in chosen if not 0 <= i < len(objects)]:
+        sys.exit(f"{clip.id} has objects 0 to {len(objects) - 1}, not {', '.join(map(str, unknown))}")
+    spec = {"objects": objects, "window": {"objects": sorted(set(chosen)), "frames": frames}}
+    with sam_slot(clip, "window") as slot:
+        venv_step(clip, TRACK, video, spec, art.folder / "window.png", flags=("--window",), slot=slot)
+
+
 def window_seconds(clip: Clip, source: Path) -> float:
     """Length of the fetched window, which every variant except a trimmed silhouette matches."""
     if clip.start is not None and clip.end is not None:
@@ -1053,7 +1070,8 @@ def add(manifest: Path, url: str, player: str, clip_id: str | None) -> None:
     print(f"added {clip_id} to {manifest}")
 
 
-def main() -> None:
+def command_line() -> argparse.ArgumentParser:
+    """The argument parser, kept out of main so main reads as the dispatch it is."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("scout").add_argument("url")
@@ -1085,7 +1103,16 @@ def main() -> None:
     crops_cmd.add_argument("--frames", type=frame_list, required=True)
     crops_cmd.add_argument("--box", type=lambda text: [int(v) for v in text.split(",")])
     crops_cmd.add_argument("--detail", action="store_true", help="each frame's detail crop with his owned mask")
-    args = parser.parse_args()
+    window_cmd = sub.add_parser("window")
+    window_cmd.add_argument("--manifest", type=Path, default=SAMPLE_MANIFEST)
+    window_cmd.add_argument("id")
+    window_cmd.add_argument("--frames", type=frame_list, required=True, help="the frames to show; tracks their span")
+    window_cmd.add_argument("--objects", type=frame_list, required=True, help="object indices, as preview labels them")
+    return parser
+
+
+def main() -> None:
+    args = command_line().parse_args()
     # The venv steps print straight to the terminal, so ours must flush per line to stay in order around them.
     sys.stdout.reconfigure(line_buffering=True)  # ty: ignore[missing-union-attribute] a TextIOWrapper at run time
 
@@ -1104,6 +1131,7 @@ def main() -> None:
         "propose": lambda clip: propose(clip, args.frame),
         "review": review,
         "crops": lambda clip: crops(clip, args.frames, args.box, args.detail),
+        "window": lambda clip: window(clip, args.frames, args.objects),
     }
     if args.command in one_clip:
         clip = next((c for c in clips if c.id == args.id), None)

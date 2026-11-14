@@ -3,6 +3,9 @@
 Run by clips.py with the SAM venv's python:  python track.py <clip.mp4> <track.json> <masks.npz>
 With --preview first, it only adds the prompts and writes one overlay PNG per prompted frame into the
 directory given in place of masks.npz, which takes seconds instead of a full track.
+With --window first, track.json also holds "window": {"objects", "frames"}. It tracks those objects over the span of
+those frames only and writes a sheet of the frames to the PNG given in place of masks.npz, so a refine is checked
+without a full track. It writes no masks.
 track.json lists objects as {"kind", "prompts", "cache"}. Each prompt is {"frame", "points", "avoid"} and may
 add "box" [x0, y0, x1, y1]. The first places the object and later ones pull its mask back after it drifts.
 "cache" is the object's own mask file, named by clips.py from a hash of its prompts, so an unchanged object is
@@ -32,6 +35,10 @@ MODEL = "facebook/sam2.1-hiera-small"
 # A refine with more than this share of its keep points, or of the mask it makes, on another object's mask is
 # probably filed under the wrong object.
 MISFILED = 0.5
+# A window sheet's tiles are half the 720p frame, three across, so a 30-frame window at every third frame is one
+# screen tall.
+TILE = 640
+COLUMNS = 3
 
 
 def save(path: Path, masks: np.ndarray, **extra) -> None:
@@ -83,31 +90,60 @@ def add_prompts(predictor: SAM2VideoPredictor, state: dict, obj_id: int, obj: di
     return shown
 
 
-def track(predictor: SAM2VideoPredictor, state: dict, objects: list[dict]) -> None:
-    """Track each object and write its [frame, h, w] masks to its cache file as soon as its group finishes.
+def groups(objects: list[dict]) -> list[list[int]]:
+    """Indices of the objects grouped by their earliest prompt frame, which SAM starts both passes from.
 
-    SAM starts both propagation passes at the earliest prompt of any object in the state, so an object
-    prompted later would never be tracked backward from its own prompt. Objects are therefore tracked in
-    groups that share an earliest prompt frame. Objects never influence each other in SAM 2.1, so grouping
-    only saves running the image encoder once per group instead of once per object.
+    SAM starts both propagation passes at the earliest prompt of any object in the state, so an object prompted later
+    would never be tracked backward from its own prompt. Objects are therefore tracked in groups that share an
+    earliest prompt frame. Objects never influence each other in SAM 2.1, so grouping only saves running the image
+    encoder once per group instead of once per object.
     """
-    groups = [list(group) for _, group in groupby(sorted(objects, key=first_frame), key=first_frame)]
-    for n, group in enumerate(groups, start=1):
+    order = sorted(range(len(objects)), key=lambda i: first_frame(objects[i]))
+    return [list(group) for _, group in groupby(order, key=lambda i: first_frame(objects[i]))]
+
+
+def propagate(predictor: SAM2VideoPredictor, state: dict, group: list[dict], frames: range) -> np.ndarray:
+    """Prompt a group that shares an earliest prompt and return its [object, frame, h, w] masks over the frames.
+
+    Frames from that prompt on are tracked forward and earlier ones backward, as a full track does. Each pass starts at
+    the prompt, or at the edge of the frames when the prompt lies outside them, so a window differs from a full track
+    only in the memory it starts with.
+    """
+    predictor.reset_state(state)
+    for obj_id, obj in enumerate(group):
+        add_prompts(predictor, state, obj_id, obj)
+    first = first_frame(group[0])
+    passes = []
+    if frames.stop > first:
+        start = max(frames.start, first)
+        passes.append((start, frames.stop - 1 - start, False))
+    if frames.start < first:
+        # SAM skips a backward pass that starts at frame 0, so a span of frame 0 alone starts one frame later.
+        start = max(min(frames.stop - 1, first), 1)
+        passes.append((start, start - frames.start, True))
+    masks = np.zeros((len(group), len(frames), state["video_height"], state["video_width"]), bool)
+    for start, count, reverse in passes:
+        for frame, obj_ids, logits in predictor.propagate_in_video(state, start, count, reverse=reverse):
+            if frame not in frames:
+                continue
+            for i, obj_id in enumerate(obj_ids):
+                masks[obj_id, frame - frames.start] = (logits[i, 0] > 0).cpu().numpy()
+    return masks
+
+
+def track(predictor: SAM2VideoPredictor, state: dict, objects: list[dict]) -> None:
+    """Track each object and write its [frame, h, w] masks to its cache file as soon as its group finishes."""
+    found = groups(objects)
+    for n, indices in enumerate(found, start=1):
+        group = [objects[i] for i in indices]
         kinds = ", ".join(obj["kind"] for obj in group)
         stamp = time.strftime("%X")
         print(
-            f"tracking group {n} of {len(groups)} from frame {first_frame(group[0])}: {kinds}, started {stamp}",
+            f"tracking group {n} of {len(found)} from frame {first_frame(group[0])}: {kinds}, started {stamp}",
             file=sys.stderr,
             flush=True,
         )
-        predictor.reset_state(state)
-        for obj_id, obj in enumerate(group):
-            add_prompts(predictor, state, obj_id, obj)
-        masks = np.zeros((len(group), state["num_frames"], state["video_height"], state["video_width"]), bool)
-        for reverse in (False, True):
-            for frame, obj_ids, logits in predictor.propagate_in_video(state, reverse=reverse):
-                for i, obj_id in enumerate(obj_ids):
-                    masks[obj_id, frame] = (logits[i, 0] > 0).cpu().numpy()
+        masks = propagate(predictor, state, group, range(state["num_frames"]))
         for obj, obj_masks in zip(group, masks, strict=True):
             save(Path(obj["cache"]), obj_masks)
 
@@ -205,15 +241,68 @@ def preview(predictor: SAM2VideoPredictor, state: dict, objects: list[dict], fra
         print(f"  {out_dir / f'{frame:05d}.png'}")
 
 
+def window(
+    predictor: SAM2VideoPredictor, state: dict, objects: list[dict], spec: dict, frames: Path, out: Path
+) -> None:
+    """Track the window's objects over the span of its frames and write a sheet of those frames to out.
+
+    Each tile is the dimmed frame with each object's mask tinted and labeled like a preview, and every prompt on that
+    frame drawn, so a refine shows beside the masks that follow it. The sheet adds the objects' prompted frames inside
+    the span, so a step over a refine still shows it. The span is tracked without the memory a full track brings in
+    from frames outside it, so its masks can differ slightly from a full track's (docs/SPEC.md#window).
+    """
+    chosen, listed = spec["objects"], spec["frames"]
+    if max(listed) >= state["num_frames"]:
+        sys.exit(f"the clip has {state['num_frames']} frames, so frame {max(listed)} is past its end")
+    span = range(min(listed), max(listed) + 1)
+    prompted = {p["frame"] for i in chosen for p in objects[i]["prompts"] if p["frame"] in span}
+    listed = sorted(set(listed) | prompted)
+    started = time.monotonic()
+    tracked = {}
+    for indices in groups([objects[i] for i in chosen]):
+        group = [chosen[j] for j in indices]
+        tracked.update(zip(group, propagate(predictor, state, [objects[i] for i in group], span), strict=True))
+    seconds = time.monotonic() - started
+    print(f"  tracked {len(chosen)} objects over frames {span.start}-{span.stop - 1} in {seconds:.1f}s")
+    font = ImageFont.load_default(size=40)
+    small = ImageFont.load_default(size=24)
+    tiles = []
+    for frame in listed:
+        masks = {i: tracked[i][frame - span.start] for i in chosen}
+        image = np.asarray(Image.open(frames / f"{frame:05d}.jpg").convert("RGB"), dtype=np.float32) * 0.5
+        for i, mask in masks.items():
+            image[mask] = image[mask] * 0.3 + np.asarray(TINTS[i % len(TINTS)]) * 0.7
+        canvas = Image.fromarray(image.astype(np.uint8))
+        draw = ImageDraw.Draw(canvas)
+        draw.text((12, 8), f"frame {frame}", font=font, fill="white", stroke_width=3, stroke_fill="black")
+        for i, mask in masks.items():
+            name, color = f"{i} {objects[i]['kind']}", TINTS[i % len(TINTS)]
+            for k, prompt in enumerate(objects[i]["prompts"]):
+                if prompt["frame"] == frame:
+                    draw_prompt(draw, prompt, name + (f" refine {k}" if k else ""), color, small)
+            if not label_above(draw, mask, name, font, color, lift=14, stroke=3):
+                print(f"  frame {frame}: object {name} has an empty mask")
+        tiles.append(canvas.resize((TILE, TILE * canvas.height // canvas.width)))
+    rows = -(-len(tiles) // COLUMNS)
+    sheet = Image.new("RGB", (TILE * min(COLUMNS, len(tiles)), tiles[0].height * rows))
+    for n, tile in enumerate(tiles):
+        sheet.paste(tile, (n % COLUMNS * TILE, n // COLUMNS * tile.height))
+    sheet.save(out)
+    print(f"  {out}")
+
+
 def main() -> None:
-    preview_only = sys.argv[1] == "--preview"
-    if preview_only:
-        sys.argv.pop(1)
+    mode = sys.argv.pop(1) if sys.argv[1].startswith("--") else None
     clip, spec_path, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
-    objects = json.loads(spec_path.read_text())["objects"]
-    if preview_only:
+    spec = json.loads(spec_path.read_text())
+    objects = spec["objects"]
+    if mode == "--preview":
         with session(clip, offload_state=False) as (predictor, state, frames):
             preview(predictor, state, objects, frames, out)
+        return
+    if mode == "--window":
+        with session(clip, offload_state=False) as (predictor, state, frames):
+            window(predictor, state, objects, spec["window"], frames, out)
         return
     missing = [obj for obj in objects if not Path(obj["cache"]).exists()]
     if missing:

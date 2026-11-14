@@ -60,6 +60,21 @@ A second benchmark the same day asked whether another number format or Apple's M
 
 Nothing beats bfloat16. Float16 and the faster MLX variant land inside its range of times, and float32 takes twice as long. MLX also moves his edge about as far as SAM 2.1 tiny does. Part of that comes from the port resizing frames with a different filter, not from the arithmetic. No license was found for the MLX port's code. Tracking stays on PyTorch in bfloat16.
 
+### Window
+
+A refine changes its object's cache key, so `build` tracks that object again over the whole clip. `clips.py window` checks a refine first. It tracks the chosen objects over the frames from the first to the last given, and writes `window.png`: the listed frames plus every prompted frame in that span, each with the masks tinted and the prompts drawn. It writes no masks.
+
+**How.** `track.py` tracks a window and a full track through the same function. Each object gets all its prompts, wherever they fall, because SAM 2.1 attends to every prompted frame. As in a full track, frames from the object's first prompt on are tracked forward and earlier frames backward, but each pass starts at the window's edge when the prompt lies outside it. The only difference from a full track is the memory of frames before the window, which the window does not have.
+
+**Measured** on 2026-11-14 on the M4, with a box refine added to the hoop, 3 runs each:
+
+| Clip, window | Full track of the hoop | Window | Window vs full, per-frame IoU |
+|---|---|---|---|
+| `nembhard-2025-den-handles`, frames 150 to 180, refine at 160 | 115.1 s (113.9 to 115.3) | 16.2 s (15.9 to 16.7) | median 0.998, min 0.984 |
+| `ray-allen-2013-finals-g6-corner-three-replay`, frames 50 to 80, refine at 60 | 55.1 s (51.8 to 55.2) | 14.6 s (14.5 to 14.7) | median 0.986, min 0.961 |
+
+Loading SAM and the clip adds 1.7 to 5.2 s to either. The window costs about 0.5 s a frame, the same rate as a full track, so it saves in proportion to the frames it skips. End to end, `clips.py window` took 17.4 to 20.7 s when the SAM slot was free. Repeated runs gave identical masks, and `masks.npz`, the object caches and `build.json` hashed the same before and after.
+
 ### Matting
 
 SAM's masks are 720p and blocky at a player's edge, so hands and the ball handler's shape blur together. A matte of the mystery player alone, made from the full-resolution source, gives his edge. Only he is matted. Matting every player costs a model run each and draws the eye away from him.
