@@ -22,6 +22,7 @@ Needs yt-dlp and ffmpeg on PATH. Output goes to media/, which is git-ignored.
 
 import argparse
 import ast
+import copy
 import fcntl
 import hashlib
 import html
@@ -416,23 +417,50 @@ def sam_missing(venv: Path) -> str | None:
     return None
 
 
-def definitions(path: Path) -> dict[str, ast.AST]:
-    """Each top-level name a module defines, by the node that defines it, with docstrings dropped. A name imported
-    from a module beside it maps to that import."""
+# Keys in definitions() for a module's statements other than its definitions, and for all of its statements.
+INIT = "<init>"
+EVERYTHING = "*"
+
+
+def definitions(path: Path) -> dict[str, list[ast.AST]]:
+    """Each top-level name a module binds, by every statement that binds it, with docstrings dropped. INIT holds its
+    other top-level statements, which run whenever it loads, less its __main__ block, and EVERYTHING all of them."""
     tree = ast.parse(path.read_text())
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and ast.get_docstring(node, clean=False):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)) and ast.get_docstring(node, clean=False):
             node.body = node.body[1:] or [ast.Pass()]
-    found: dict[str, ast.AST] = {}
+    found: dict[str, list[ast.AST]] = {INIT: [], EVERYTHING: list(tree.body)}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-            found[node.name] = node
+            names = [node.name]
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            found |= {n.id: node for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
-        elif isinstance(node, ast.ImportFrom) and (path.parent / f"{node.module}.py").exists():
-            found |= {alias.asname or alias.name: node for alias in node.names}
+            names = [n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)]
+        elif isinstance(node, ast.ImportFrom) and all(alias.name != "*" for alias in node.names):
+            names = [alias.asname or alias.name for alias in node.names]
+        elif ast.unparse(node).startswith("if __name__ == '__main__':"):
+            names = []
+        else:
+            names = [INIT]
+        for name in names:
+            found.setdefault(name, []).append(node)
     return found
+
+
+def references(node: ast.AST, module: str, folder: Path) -> tuple[list[tuple[str, str]], set[str]]:
+    """The (module, name) pairs the node's code in module refers to, a plain or star import of a module in folder as
+    all of it, and the attribute names it reads."""
+    found, attributes = [], set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name):
+            found.append((module, sub.id))
+        elif isinstance(sub, ast.Attribute):
+            attributes.add(sub.attr)
+        elif isinstance(sub, ast.Import):
+            found += [(alias.name, EVERYTHING) for alias in sub.names if (folder / f"{alias.name}.py").exists()]
+        elif isinstance(sub, ast.ImportFrom) and (folder / f"{sub.module}.py").exists():
+            found += [(str(sub.module), EVERYTHING if a.name == "*" else a.name) for a in sub.names]
+    return found, attributes
 
 
 def model_code(script: Path, entry: str) -> str:
@@ -440,42 +468,51 @@ def model_code(script: Path, entry: str) -> str:
     it, as ast.unparse writes them without docstrings.
 
     The render rules in matte.py and detail.py sit beside their model steps but are never reached from them, so
-    tuning one leaves the step's artifact current, and a change the step does reach needs no version bump. A method
-    counts as reached when reached code reads an attribute of its name. Third-party code is out, so its pins belong
-    in the recipe.
+    tuning one leaves the step's artifact current, and a change the step does reach needs no version bump. It errs
+    toward a re-run: a reached module's other top-level statements count, a plain or star import of a module beside
+    it counts all of that module, and a reached class counts its header and dunder methods, and any method whose
+    name reached code reads as an attribute. Third-party code is out, so its pins belong in the recipe.
     """
-    modules: dict[str, dict[str, ast.AST]] = {}
+    modules: dict[str, dict[str, list[ast.AST]]] = {}
+    seen: set[tuple[str, str]] = set()
     reached: dict[tuple[str, str], str] = {}
     attributes: set[str] = set()
-    # Each reached class's methods by (module, "Class.method").
     methods: dict[tuple[str, str], ast.AST] = {}
+
+    def local(module: str | None) -> bool:
+        return bool(module) and (script.parent / f"{module}.py").exists()
+
+    def reach(node: ast.AST, module: str, name: str) -> str:
+        """The node's text as reached by name, queueing what it refers to."""
+        if isinstance(node, ast.ImportFrom) and name not in (INIT, EVERYTHING):
+            original = next(a.name for a in node.names if (a.asname or a.name) == name)
+            todo.extend([(str(node.module), original)] if local(node.module) else [])
+            return f"from {node.module} import {original}"
+        if isinstance(node, ast.ClassDef) and name != EVERYTHING:
+            calls = [m for m in node.body if isinstance(m, ast.FunctionDef)]
+            methods.update({(module, f"{node.name}.{m.name}"): m for m in calls})
+            todo.extend((module, f"{node.name}.{m.name}") for m in calls if m.name.startswith("__"))
+            node = copy.copy(node)
+            node.body = [b for b in node.body if b not in calls] or [ast.Pass()]
+        refs, attrs = references(node, module, script.parent)
+        todo.extend(refs)
+        attributes.update(attrs)
+        return ast.unparse(node)
+
     todo = [(script.stem, entry)]
     while todo:
         module, name = todo.pop()
+        if (module, name) in seen:
+            continue
+        seen.add((module, name))
         if module not in modules:
             modules[module] = definitions(script.parent / f"{module}.py")
-        node = methods.get((module, name)) or modules[module].get(name)
-        if (module, name) in reached or node is None:
-            pass
-        elif isinstance(node, ast.ImportFrom):
-            original = next(a.name for a in node.names if (a.asname or a.name) == name)
-            reached[module, name] = f"from {node.module} import {original}"
-            todo.append((str(node.module), original))
-        else:
-            parts = [node]
-            if isinstance(node, ast.ClassDef):
-                parts = [*node.bases, *(p for p in node.body if not isinstance(p, ast.FunctionDef))]
-                methods |= {(module, f"{name}.{m.name}"): m for m in node.body if isinstance(m, ast.FunctionDef)}
-            reached[module, name] = "\n".join(ast.unparse(p) for p in parts)
-            for sub in (sub for part in parts for sub in ast.walk(part)):
-                if isinstance(sub, ast.Name):
-                    todo.append((module, sub.id))
-                elif isinstance(sub, ast.Attribute):
-                    attributes.add(sub.attr)
-                elif isinstance(sub, ast.ImportFrom) and (script.parent / f"{sub.module}.py").exists():
-                    todo += [(str(sub.module), alias.name) for alias in sub.names]
+            todo.append((module, INIT))
+        found = [methods[module, name]] if (module, name) in methods else modules[module].get(name, [])
+        if found:
+            reached[module, name] = "\n".join(reach(node, module, name) for node in found)
         if not todo:
-            todo = [key for key in methods if key[1].split(".")[1] in attributes and key not in reached]
+            todo = [key for key in methods if key[1].split(".")[1] in attributes and key not in seen]
     return hashlib.sha256(json.dumps(sorted(reached.items())).encode()).hexdigest()
 
 

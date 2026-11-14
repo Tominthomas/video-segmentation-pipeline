@@ -82,8 +82,6 @@ class SamPins(unittest.TestCase):
 
 
 class ShapeRecipes(unittest.TestCase):
-    """A matte.npz or detail.npz rebuilds only when its model step's code changes, and the renders follow the rules."""
-
     def setUp(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
@@ -164,6 +162,22 @@ class ShapeRecipes(unittest.TestCase):
         self.edit("silhouette.py", "    if radius <= 0 or not len(ys):", "    if radius < 0 or not len(ys):")
         self.build()
         self.assertEqual(self.runs, ["detail_step", "matte_step", "detail_step", "matte_step"])
+
+    def test_code_a_model_step_reaches_indirectly_re_runs_it(self):
+        self.build()
+        self.edit("matte.py", "MODEL_SIDE = 960\n", "MODEL_SIDE = 960\nMODEL_SIDE *= 2\n")
+        self.build()
+        self.assertEqual(self.runs[2:], ["detail_step", "matte_step"])
+        make = "def make(source: Path, spec: dict, out: Path) -> None:\n"
+        self.edit("detail.py", make, make + "    import matte as geometry  # noqa: PLC0415\n\n    geometry.crop_size\n")
+        self.build()
+        self.assertEqual(self.runs[4:], ["detail_step"])
+        self.edit("matte.py", "LEVELS = (0.12, 0.5)", "LEVELS = (0.1, 0.5)")
+        self.build()
+        self.assertEqual(self.runs[5:], ["detail_step"])
+        self.edit("detail.py", "class Detail(NamedTuple):", "@staticmethod\nclass Detail(NamedTuple):")
+        self.build()
+        self.assertEqual(self.runs[6:], ["detail_step"])
 
 
 if __name__ == "__main__":

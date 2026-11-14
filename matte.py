@@ -139,6 +139,8 @@ class Matte(NamedTuple):
     @classmethod
     def load(cls, path: Path) -> Matte:
         data = np.load(path)
+        if "height" not in data:
+            sys.exit(f"{path} predates render-time fallback; build its clip with clips.py to remake it")
         width, height = (int(v) for v in data["crop"])
         source_w, source_h = (int(v) for v in data["source"])
         return cls(
