@@ -1,6 +1,6 @@
 """Track prompted players, the ball and the hoop through a clip with SAM 2.1 and save their masks.
 
-Run by clips.py with the project venv:  .venv/bin/python track.py <clip.mp4> <track.json> <masks.npz>
+Run by clips.py with the SAM venv's python:  python track.py <clip.mp4> <track.json> <masks.npz>
 With --preview first, it only adds the prompts and writes one overlay PNG per prompted frame into the
 directory given in place of masks.npz, which takes seconds instead of a full track.
 track.json lists objects as {"kind", "prompts", "cache"}. Each prompt is {"frame", "points", "avoid"} and may

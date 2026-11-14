@@ -1,6 +1,7 @@
 """Score the thresholds that pick and check the mystery player's shape against every recorded human verdict.
 
-Run with the project venv:  .venv/bin/python judge.py <judgments.json> <manifest.json> [...] [--clips DIR]
+Run with the shared SAM venv:  $SAM_PY judge.py <judgments.json> <manifest.json> [...] [--clips DIR]
+$SAM_PY is ~/.local/share/bagwork/sam/venv/bin/python, which the README's Silhouettes section installs.
 Real judgments live at $BAGWORK_CONTENT/judgments.json, beside the manifests, because clip ids name the player.
 --clips is the folder that holds each clip's artifacts, media/clips by default. Nothing is written.
 

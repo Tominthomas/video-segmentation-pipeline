@@ -6,15 +6,15 @@ This repo turns NBA highlight clips into the silhouette clue videos that [Bagwor
 
 ```sh
 ruff check && ruff format --check
-ty check --python .venv/bin/python
-python3 -m unittest discover tests
+ty check --python ~/.local/share/bagwork/sam/venv/bin/python
+~/.local/share/bagwork/sam/venv/bin/python -m unittest discover tests
 python3 clips.py --help
 python3 clips.py build [--manifest FILE] [id ...]
 python3 clips.py approve [--manifest FILE] id ...
-.venv/bin/python judge.py $BAGWORK_CONTENT/judgments.json MANIFEST ...
+~/.local/share/bagwork/sam/venv/bin/python judge.py $BAGWORK_CONTENT/judgments.json MANIFEST ...
 ```
 
-Run the four checks before every commit. `build` with a `track` entry needs the SAM venv the README's Silhouettes section sets up. Matting and SAM runs are heavy, so run one at a time and check `memory_pressure` first.
+Run the four checks before every commit. The checks and every `build` step use the shared SAM venv that the README's Silhouettes section installs once per machine. Matting and SAM runs are heavy, so run one at a time and check `memory_pressure` first.
 
 ## Handoff to Bagwork
 

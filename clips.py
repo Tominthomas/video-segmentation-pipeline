@@ -24,6 +24,7 @@ import argparse
 import fcntl
 import hashlib
 import html
+import importlib.metadata
 import json
 import os
 import re
@@ -66,7 +67,10 @@ ENCODE = [
 
 # Each clue variant hides faces and jersey text with one whole-frame look.
 # The blur runs before recoloring so small digits smear instead of turning into crisp edges.
-VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
+# SAM 2 and every pipeline script run in one venv outside the checkout, so every worktree shares one install.
+SAM_VENV = Path.home() / ".local" / "share" / "bagwork" / "sam" / "venv"
+SAM_PYTHON = SAM_VENV / "bin" / "python"
+SAM_PINS = ROOT / "sam-requirements.txt"
 TRACK = ROOT / "track.py"
 SILHOUETTE = ROOT / "silhouette.py"
 QC = ROOT / "qc.py"
@@ -83,7 +87,8 @@ MATANYONE_COMMIT = "0079197acd6d16a741f71558809c06c586c579e0"
 MATTE_WEIGHTS = MATTE_HOME / "matanyone2.pth"
 MATTE_WEIGHTS_SHA256 = "5e9821e4087231427376b437c85bb6e072b41e582314f06fd524f75bc4af5914"
 TRACK_KEYS = ("frame", "objects")
-# Part of every tracked object's cache key. Bump it when a track.py change alters the masks it writes.
+# Part of every tracked object's cache key. Bump it when a track.py or sam-requirements.txt change alters the masks it
+# writes. tests/test_clips.py fails when the pins change and it does not.
 TRACK_VERSION = 1
 # Part of matte.npz's recipe with matte.py's text. Bump it when a change to the silhouette.py helpers matte.py imports
 # (dilate, erode, shapes, smooth, load) alters the mattes it writes.
@@ -255,10 +260,11 @@ def venv_step(
     log: Path | None = None,
     flags: tuple[str, ...] = (),
     slot: int | None = None,
-    python: Path = VENV_PYTHON,
+    python: Path | None = None,
 ) -> None:
-    """Run a pipeline script in a venv, the project's by default, exiting on failure. A held SAM slot's fd passes to
+    """Run a pipeline script in a venv, the SAM venv by default, exiting on failure. A held SAM slot's fd passes to
     the script."""
+    python = python or sam_python(clip)
     with tempfile.TemporaryDirectory() as tmp, Path(log or os.devnull).open("a") as log_file:
         spec_path = Path(tmp) / "spec.json"
         spec_path.write_text(json.dumps(spec))
@@ -336,6 +342,8 @@ def sam_slot(clip: Clip, command: str, log: Path | None = None):
 
 def track_masks(clip: Clip, art: Artifacts, video: Path, objects: list[dict], out: Path) -> None:
     """Run track.py under the SAM slot when an object needs tracking, and record what the run cost in build.json."""
+    # Fail before queueing for the slot; venv_step checks again once the slot is held.
+    sam_python(clip)
     missing = sum(not Path(obj["cache"]).exists() for obj in objects)
     log = art.folder / "track.log"
     # A fresh log per masks build, so the last run's progress never reads as this one's.
@@ -375,6 +383,42 @@ def track_objects(spec: dict, folder: Path, clip_hash: str) -> list[dict]:
         key = hashlib.sha256(json.dumps([TRACK_VERSION, clip_hash, prompts], sort_keys=True).encode()).hexdigest()
         objects.append({"kind": obj["kind"], "prompts": prompts, "cache": str(folder / "objects" / f"{key[:16]}.npz")})
     return objects
+
+
+def sam_python(clip: Clip) -> Path:
+    """The SAM venv's python, exiting when the venv differs from sam-requirements.txt."""
+    if reason := sam_missing(SAM_VENV):
+        sys.exit(f"{clip.id}: {reason}. README.md#silhouettes installs it")
+    return SAM_PYTHON
+
+
+def pin(line: str) -> tuple[str, str]:
+    """A pip freeze line as its package's normalized name and the rest, such as ("torch", "==2.15.0")."""
+    name = re.split(r"[=@ ]", line, maxsplit=1)[0]
+    return re.sub(r"[-_.]+", "-", name).lower(), line[len(name) :]
+
+
+def sam_missing(venv: Path) -> str | None:
+    """Why the SAM venv can't run, or None when it holds every package at the version sam-requirements.txt pins."""
+    cfg = venv / "pyvenv.cfg"
+    if not (venv / "bin" / "python").exists() or not cfg.exists():
+        return f"no SAM venv at {venv}"
+    # Read the site-packages of the python the venv was made with, not every lib/python* left in it.
+    version = re.search(r"^version\s*=\s*(\d+\.\d+)", cfg.read_text(), re.MULTILINE)
+    site = venv / "lib" / f"python{version[1] if version else ''}" / "site-packages"
+    installed = {}
+    for dist in importlib.metadata.distributions(path=[str(site)]):
+        url = json.loads(dist.read_text("direct_url.json") or "{}")
+        vcs = url.get("vcs_info")
+        # An install from a URL or a local dir, editable ones included, never matches a == pin.
+        source = f" @ {vcs['vcs']}+{url['url']}@{vcs['commit_id']}" if vcs else f" @ {url['url']}" if url else None
+        installed[pin(dist.metadata["Name"])[0]] = source or f"=={dist.version}"
+    for line in SAM_PINS.read_text().splitlines():
+        name, wanted = pin(line)
+        if (have := installed.get(name)) != wanted:
+            found = f"has {name}{have}" if have else f"has no {name}"
+            return f"{venv} {found}, but sam-requirements.txt pins {name}{wanted}"
+    return None
 
 
 def matte_missing() -> str | None:
@@ -752,7 +796,7 @@ def build(clips: list[Clip]) -> bool:
                 "qc.json",
                 [QC.read_text(), SILHOUETTE.read_text(), render["mystery"], art.ledger["masks.npz"], *shaped],
                 lambda out: run(
-                    [str(VENV_PYTHON), str(QC), str(masks), json.dumps(render["mystery"]), str(out)]
+                    [str(sam_python(clip)), str(QC), str(masks), json.dumps(render["mystery"]), str(out)]
                     + ([drawn] if drawn else [])
                 ),
             )
