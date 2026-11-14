@@ -41,11 +41,11 @@ The `track` entry also picks the crop: `"follow": "holder"` (the player with the
 
 ## The render contract
 
-Bagwork takes a render through `bagwork clips add <manifest> --renders <folder>` in sports-playground, which reads each manifest entry's `id`, `player`, `title`, `url`, `start` and `end` and uploads `<folder>/<id>.mp4`. `tools/bagwork/library.ts` there refuses a render unless all of these hold:
+Bagwork takes a render through `bagwork clips add <manifest> --renders <folder>` in the bagwork repo, which reads each manifest entry's `id`, `player`, `title`, `url`, `start` and `end` and uploads `<folder>/<id>.mp4`. `tools/bagwork/library.ts` there refuses a render unless all of these hold:
 
 - It is under 2,000,000 bytes, because the Worker streams every clip whole to a phone.
 - ffprobe reads exactly one stream, and it is video. No audio, subtitle or data track.
 - It has no chapters.
 - Every tag on the container and the stream is one ffmpeg writes by default: `major_brand`, `minor_version`, `compatible_brands`, `encoder` (`Lavf` or `Lavc` with an optional ` libx264`), `handler_name` (`VideoHandler`), `language` and `vendor_id`. Any other tag or value is free text that could name the player.
 
-The `url` must be a YouTube or X link, because the game shows it as the reveal. `silhouette.mp4` from `clips.py build` meets the stream, chapter and tag rules as it is: H.264 from libx264, no audio and stripped metadata. `build` does not check the byte limit, and a long clip can pass it, so check `ls -l` before you approve one. Copy each approved one to `$BAGWORK_CONTENT/approved/<id>.mp4`. The check in sports-playground is the source of truth; if this list and that code disagree, the code wins.
+The `url` must be a YouTube or X link, because the game shows it as the reveal. `silhouette.mp4` from `clips.py build` meets the stream, chapter and tag rules as it is: H.264 from libx264, no audio and stripped metadata. `build` does not check the byte limit, and a long clip can pass it, so check `ls -l` before you approve one. Copy each approved one to `$BAGWORK_CONTENT/approved/<id>.mp4`. The check in the bagwork repo is the source of truth; if this list and that code disagree, the code wins.
