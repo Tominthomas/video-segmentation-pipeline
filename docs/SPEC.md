@@ -195,6 +195,29 @@ It exits 1 when today's thresholds get a verdict wrong.
 
 On 2026-11-14 the backfilled file reproduces every share above to the whole percent and gets no verdict wrong. `DETAIL_BELOW` holds from 0.229 to 0.261, `GHOST_FRAME` from 0.025 to 0.063, and `MATTE_GHOSTING` from 0.097 to 0.262. `MATTE_FALLBACK` can take any value from 0 to 1, because `den-iso`, the one clip that falls back on more than 5%, also ghosts on 66%. No verdict yet needs the fallback check. The four McDaniels losses are SAM wins, because Tomin kept their approved SAM renders. The Nembhard wide clips are recorded as detail wins from the detail pass's prototyping, not blind judging.
 
+### Encoding
+
+`silhouette.mp4` uses the shared `ENCODE` in `clips.py`: libx264, preset medium, CRF 20, yuv420p and a keyframe every 15 frames. A test on 2026-11-14 tried to use the unused byte budget for sharper edges. It did not change the encode, because there is no budget to use.
+
+**Method.** Eight library clips, 118 to 450 frames, wide and close, were each drawn once by `silhouette.py`. Each set of lossless PNG frames was then encoded with 20 settings: CRF 22 to 14 with preset medium or slow, each with and without `-tune animation`. Each encode was compared with its PNGs in RGB by PSNR, by SSIM and by PSNR on a 3-pixel band around the edges. x264 is deterministic, so a second encode gave the same bytes, and the only spread is between clips.
+
+**Results.** All gains are edge-band PSNR against today, as the median over the eight clips.
+
+| Setting | Bytes | Edge PSNR |
+|---|---|---|
+| CRF 18 | +16% | +1.7 dB |
+| CRF 16 | +35% | +3.3 dB |
+| `-tune animation`, CRF 20 | +10% | +1.4 dB |
+| preset slow, CRF 20 | 0% | +0.2 dB |
+| slow and `-tune animation`, CRF 18 | +27% | +3.2 dB |
+
+- The codec limits the edges, not the chroma. Today the edges measure 31.0 to 33.2 dB. The same frames through yuv420p with no codec measure 44.1 to 44.8 dB. Every library clip has a mystery player, so the ball draws white and the renders are gray. 4:2:0 costs them nothing.
+- Close clips are the densest. `okc-pullup-close` takes 109 KB a second at today's settings, so a 20-second close render would be about 2.18 MB, over the 2,000,000-byte limit. No setting that sharpens the edges keeps a 20-second render of every clip under 1.6 MB. CRF 22, which blurs them, still reaches 1.87 MB.
+- `-tune animation` matches today's edges at CRF 22 with 6% fewer bytes. It uses more reference frames, which raises the H.264 level from 3.1 to 4.0, or to 5.0 with preset slow.
+
+A sharper encode needs a per-render byte budget first, such as a CRF chosen from the clip's length, or a byte check in `build`.
+
+
 ## Tooling
 
 `pyproject.toml` holds the ruff and ty config. Line length is 120. Rule sets are `E`, `F`, `I`, `B`, `UP`, `SIM`, `ERA`, `ARG`, `BLE`, `C4`, `C90`, `PIE`, `RET`, `RUF`, `PTH`, `PL`, `FURB` and `PERF`, less `PLR2004` (magic values), `PLR0913` and `PLR0917` (argument counts). `max-complexity` is 14, so a check table or a state machine can stay one function. `subprocess.run` always names `check`. `ruff format` owns layout.
