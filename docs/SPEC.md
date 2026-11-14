@@ -217,6 +217,27 @@ On 2026-11-14 the backfilled file reproduces every share above to the whole perc
 
 A sharper encode needs a per-render byte budget first, such as a CRF chosen from the clip's length, or a byte check in `build`.
 
+### Temporal smoothing
+
+`silhouette.py` draws each layer from that frame's mask or pass alone, so SAM's frame-to-frame jitter at an edge shows. Smoothing each layer's coverage over time at render was tried on 2026-11-14 and not built. No variant removed enough jitter to be worth the tears it puts in fast-moving limbs.
+
+**Measure.** Each layer's coverage is taken over the frames the viewer sees, each frame in its own crop window. Wobble is the coverage that moves out and comes back within 6 frames (0.2 s): the sum of the frame-to-frame changes over the window, less the net change across it, per pixel of edge. A one-frame and a two-frame wobble count the same. A part that crosses a pixel and leaves it within 0.2 s counts too, so a thin limb in steady motion scores as wobble, and a filter that deletes it scores as removing wobble. Every share removed below is an upper bound on the jitter removed. On synthetic discs, a disc in steady motion scores 0.05 px a frame, and 1 px of jitter in its radius raises that to 0.18. Each variant was also checked for the area it adds or cuts more than 2 px from that frame's own shape, and for how much it softens the edge. A first count of one-frame reversals alone was dropped, because a 3-frame median removes most of them by design: 0.57 to 0.05 px on a 12-frame stretch of `den-handles`.
+
+**Clips.** Eight library clips, re-rendered from their cached `masks.npz`, `matte.npz` and `detail.npz` with no model run: McDaniels `hou-drive` (matte), Nembhard `den-handles`, `gsw-drive` and `tor-drive` (detail) and `okc-pullup-close` (matte), and Tatum `phi-go-ahead-three` (detail), `atl-courtside-handles` (matte) and `mil-slomo-dunk` (SAM). Seven re-render pixel for pixel like the library's `silhouette.mp4`. The library's `mil-slomo-dunk` render differs from what its manifest, which now sets `"shape": "sam"`, renders today, so that clip measures today's render.
+
+**Today.** The mystery player's edge wobbles 1.7 to 2.9 px a frame, and the gray players' 1.2 to 3.5. Part of that is the crop window and the broadcast camera moving, which no per-layer filter removes. On the holder clips, the hoop's mask barely changes, and every variant leaves at least 90% of its 0.6 to 2.2 px.
+
+| Variant | His wobble removed | Worst area added or cut on one frame | Seen on fast frames |
+|---|---|---|---|
+| 3-frame average | | | widens his soft edge about 8 times, 1.5 to 11.7 px over `den-handles` |
+| 3-frame median | 14 to 50% | 1,000 to 6,900 px² | cuts an arm off on `mil-slomo-dunk` frame 254, shreds his legs into slivers on `tor-drive` frame 56 |
+| median kept within 2 px of today | 5 to 19% | none past 2 px | |
+| median kept within 4 px of today | 10 to 31% | 290 to 930 px² | streaks along his legs on `tor-drive` frame 56 and a notched arm on `mil-slomo-dunk` frame 254 |
+
+A median of three soft edges that don't line up makes a jagged edge wherever a limb moves more than a few pixels a frame. Bounding it to today's shape only shrinks the band where that happens. On fast frames the plain median cuts 1.3 to 6.3 px off the ball's edge, so the ball would stay unsmoothed whatever won. A 3-frame average aligned on each layer's centroid and an average used only while the layer barely moves were tried on `den-handles` under the first count. The aligned one widened his edge to 7.5 px, against the plain average's 11.7, and the gated one removed none of his wobble.
+
+The 2 px bound keeps only 29 to 54% of the plain median's gain, so most of what the median removes lies more than 2 px from today's edge. The measure can't say how much of that is jitter and how much is fast limbs the median deleted. One-frame pieces such as his legs merging on `den-handles` frame 67 are one source a fix where the masks are made, in SAM's prompts or the detail pass's speckle rule, could target.
+
 
 ## Tooling
 
