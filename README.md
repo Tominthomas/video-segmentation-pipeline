@@ -40,6 +40,8 @@ SAM2_BUILD_CUDA=0 $S/venv/bin/pip install --no-deps -r sam-requirements.txt
 
 `track.py` runs SAM 2.1 and caches the masks in `masks.npz`, about 0.3 seconds per object per frame on an M4 (`SAM_DEVICE=cpu` overrides the Apple GPU). `silhouette.py` draws them in seconds, so changing the look never re-runs tracking. Objects can also list `avoid` points SAM should leave out, such as a backboard behind the rim.
 
+A `refine` on an object pulls its mask back after it drifts, and changes its cache key, so `build` tracks it again over the whole clip. To check a refine first, `python3 clips.py window [--manifest FILE] id --frames 150-180:3 --objects 11` tracks only the listed objects over the frames from the first to the last given and writes `window.png` in the clip's folder: each listed frame with the masks tinted and the prompts drawn. It writes no masks, so `masks.npz` and the object caches stay as they were. See [docs/SPEC.md](docs/SPEC.md#window) for how close its masks come to a full track's.
+
 The `track` entry also picks the crop: `"follow": "holder"` (the player with the ball; at the release it eases out to keep the shooter and the hoop in frame), `"ball"`, or `"action"` (every player and the hoop, the default), with `"zoom"` (default 2) for the first two.
 
 Before changing a threshold in `detail.py` or `qc.py`, score it against the recorded verdicts with `~/.local/share/bagwork/sam/venv/bin/python judge.py $BAGWORK_CONTENT/judgments.json <manifest> ...`. It says which verdicts the change breaks. [docs/SPEC.md](docs/SPEC.md#judgments) has the file's format.
