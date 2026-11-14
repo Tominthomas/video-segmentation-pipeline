@@ -48,6 +48,18 @@ SAM 2.1 small tracks one object at about 0.45 s a frame on an M4, and the GPU is
 
 Keeping SAM's state on the GPU changes nothing, because Apple's memory is shared by the CPU and GPU. Tiny saves 8% but moves his edge enough that one frame in ten agrees with small's below 0.85, so tracking stays on small with the offload as it is. Two SAM jobs at once would only split the GPU between them, which is why the SAM slot runs one at a time.
 
+A second benchmark the same day asked whether another number format or Apple's MLX runtime is faster. It used the same clip and player, with five alternating runs of each variant. Today's tracking runs in bfloat16 on PyTorch's Apple GPU backend.
+
+| Variant | Total time, median and range | Masks against today's |
+|---|---|---|
+| Today, PyTorch bfloat16 | 97.7 s, 96.2 to 102.1 | identical |
+| PyTorch float16 | 99.1 s, 95.5 to 103.9 | median IoU 0.996, 10th percentile 0.983 |
+| PyTorch float32 | 215.3 s, 209.9 to 223.6 | median IoU 0.996, 10th percentile 0.980 |
+| MLX float32, `mlx-sam` 0.2.0 | 127.1 s, 124.5 to 128.7 | median IoU 0.946, 10th percentile 0.854 |
+| MLX with float16 weights and memory | 96.7 s, 94.4 to 104.5 | median IoU 0.946, 10th percentile 0.854 |
+
+Nothing beats bfloat16. Float16 and the faster MLX variant land inside its range of times, and float32 takes twice as long. MLX also moves his edge about as far as SAM 2.1 tiny does. Part of that comes from the port resizing frames with a different filter, not from the arithmetic. The MLX port's code carries no license. Tracking stays on PyTorch in bfloat16.
+
 ### Matting
 
 SAM's masks are 720p and blocky at a player's edge, so hands and the ball handler's shape blur together. A matte of the mystery player alone, made from the full-resolution source, gives his edge. Only he is matted. Matting every player costs a model run each and draws the eye away from him.
