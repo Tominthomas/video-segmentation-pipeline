@@ -90,7 +90,7 @@ Two looks were tried and not built. His matte drawn over the ball claims 60 to 7
 
 The thresholds come from blind judging on 2026-11-12. The McDaniels matte that won, Houston, ghosts on 10% of frames. Three that lost ghost on 26 to 66%: `lac-pnr-dunk`, `den-iso` and `cle-self-lob`. `den-iso` also falls back on 6%. Nembhard's close clip, where the matte won 14 of 14 frames, ghosts on 2%. The fourth loser, `den-block`, passes both checks. He fills most of its frame, so the crop is the whole source and the matte adds little over SAM, and no measure here sees that. [Judgments](#judgments) scores both thresholds against these verdicts.
 
-**Install.** MatAnyone 2 lives outside the checkout in `~/.local/share/bagwork/matte/`, so every worktree on a machine shares one copy. Its own venv keeps OpenCV, SciPy and a non-commercial package out of `.venv`. Its `pyproject.toml` fails to build a wheel at the pinned commit, so it installs editable from a checkout.
+**Install.** MatAnyone 2 lives outside the checkout in `~/.local/share/bagwork/matte/`, so every worktree on a machine shares one copy. Its own venv keeps OpenCV, SciPy and a non-commercial package out of the SAM venv. Its `pyproject.toml` fails to build a wheel at the pinned commit, so it installs editable from a checkout.
 
 ```sh
 M=~/.local/share/bagwork/matte
@@ -203,8 +203,8 @@ On 2026-11-14 the backfilled file reproduces every share above to the whole perc
 |---|---|---|
 | `ruff` (brew) | 0.17.4 | lint and format |
 | `ty` (brew) | 0.0.100 | type check |
-| numpy, Pillow (`.venv`) | 2.5.4, 13.0.0 | every script |
-| torch, torchvision, SAM 2.1 (`.venv`) | see [README.md](../README.md#silhouettes) | `track.py`, `detail.py`, `propose.py` |
+| numpy, Pillow (SAM venv) | 2.5.4, 13.0.0 | every script |
+| torch, torchvision, SAM 2.1 (SAM venv, see [README.md](../README.md#silhouettes)) | 2.15.0, 0.29.2, commit `2b90b9f`, all in `sam-requirements.txt` | `track.py`, `detail.py`, `propose.py` |
 | MatAnyone 2 (own venv, see [Matting](#matting)) | commit `0079197`, weights sha256 `5e9821e4…5914` | the mystery player's matte. S-Lab License 1.0, non-commercial use only. |
 
-`python.yml` runs on pull requests, on pushes to `main` and on manual dispatch. It runs `ruff check`, `ruff format --check`, `ty check` and `python3 -m unittest discover tests`, and sets `timeout-minutes: 5`. `ty check` runs against numpy and Pillow at the project venv's versions. torch, torchvision, SAM and MatAnyone 2 are too big to install there, so `pyproject.toml` lets their imports go unresolved and they type as `Any`.
+`python.yml` runs on pull requests, on pushes to `main` and on manual dispatch. It runs `ruff check`, `ruff format --check`, `ty check` and `python3 -m unittest discover tests`, and sets `timeout-minutes: 5`. `ty check` runs against numpy and Pillow at the versions `sam-requirements.txt` pins. torch, torchvision, SAM and MatAnyone 2 are too big to install there, so `pyproject.toml` lets their imports go unresolved and they type as `Any`.

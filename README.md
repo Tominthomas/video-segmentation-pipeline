@@ -4,12 +4,13 @@
 
 ## Checks
 
-The scripts need Python 3.14, ruff and ty (`brew install python ruff ty`). The checks and tests need only numpy and Pillow:
+The scripts need Python 3.14, ruff and ty (`brew install python ruff ty`). The checks use the shared SAM venv, which [Silhouettes](#silhouettes) installs once per machine:
 
 ```sh
+SAM_PY=~/.local/share/bagwork/sam/venv/bin/python
 ruff check && ruff format --check
-ty check --python .venv/bin/python
-python3 -m unittest discover tests
+ty check --python $SAM_PY
+$SAM_PY -m unittest discover tests
 python3 clips.py --help
 ```
 
@@ -27,13 +28,15 @@ Replay angles make better clues than the wide broadcast shot: the player is bigg
 
 ### Silhouettes
 
-A clip with a `track` entry also gets `silhouette.mp4`: players in white, the ball in orange and the hoop in gray on black, cropped to follow the play. Each tracked object lists one or more `[x, y]` click points in the 720p frame on its prompt `frame`, and SAM 2.1 follows it through the clip. This step runs in a project venv:
+A clip with a `track` entry also gets `silhouette.mp4`: players in white, the ball in orange and the hoop in gray on black, cropped to follow the play. Each tracked object lists one or more `[x, y]` click points in the 720p frame on its prompt `frame`, and SAM 2.1 follows it through the clip. SAM and every pipeline script run in one venv outside the checkout, so every worktree on a machine shares it:
 
 ```sh
-python3 -m venv .venv
-.venv/bin/pip install torch torchvision pillow numpy huggingface_hub
-SAM2_BUILD_CUDA=0 .venv/bin/pip install "git+https://github.com/facebookresearch/sam2"
+S=~/.local/share/bagwork/sam
+python3.14 -m venv $S/venv
+SAM2_BUILD_CUDA=0 $S/venv/bin/pip install --no-deps -r sam-requirements.txt
 ```
+
+`--no-deps` holds every package to the version `sam-requirements.txt` pins, SAM 2 included. Before each step that uses the venv, `clips.py` checks it against the pins and stops with the first package that differs. Masks are cached by `TRACK_VERSION`, not by these versions, so a pin change also bumps `TRACK_VERSION` in `clips.py`, and `tests/test_clips.py` fails until it does.
 
 `track.py` runs SAM 2.1 and caches the masks in `masks.npz`, about 0.3 seconds per object per frame on an M4 (`SAM_DEVICE=cpu` overrides the Apple GPU). `silhouette.py` draws them in seconds, so changing the look never re-runs tracking. Objects can also list `avoid` points SAM should leave out, such as a backboard behind the rim.
 

@@ -1,7 +1,7 @@
 """Write a clip's review page: the silhouette beside a numbered mask overlay, the QC flags, ball and holder on a
 frame timeline, and stills at the moments an approval turns on.
 
-Run by clips.py with the project venv:  .venv/bin/python review.py <clip.mp4> <review.json> <clip folder>
+Run by clips.py with the SAM venv's python:  python review.py <clip.mp4> <review.json> <clip folder>
 review.json is {"render", "flags"}: silhouette.py's render spec and qc.json's flags. It writes review.html in the
 clip folder, and the overlay video and stills beside it in review/. The overlay shows the source video, so the page
 stays on this machine and is never published. A matted or detail render adds a row to the timeline: the frames drawn
