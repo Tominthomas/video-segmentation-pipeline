@@ -542,11 +542,9 @@ def contact_sheet(variants: dict[Path, float], out: Path) -> None:
     run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", graph, "-frames:v", "1", "-f", "image2", str(out)])
 
 
-# Bagwork's render contract, copied from renderProblem in tools/bagwork/library.ts in the bagwork repo, which wins
-# when the two disagree. The Worker streams every clip whole to a phone, so a render stays under this many bytes.
+# Bagwork's render contract, copied from MAX_CLIP_BYTES, RENDER_TAGS and renderProblem in tools/bagwork/library.ts in
+# the bagwork repo, which wins when the two disagree.
 MAX_RENDER_BYTES = 2_000_000
-# The only tags a render may carry, each with the only values it may have. Any other tag or value is free text that
-# could name the player.
 RENDER_TAGS = {
     "major_brand": re.compile(r"[a-z0-9]{4}"),
     "minor_version": re.compile(r"\d+", re.ASCII),
@@ -785,26 +783,29 @@ def build(clips: list[Clip]) -> bool:
 def approve(clips: list[Clip], approved: Path) -> bool:
     """Copy each clip's silhouette.mp4 to approved/<id>.mp4 if Bagwork's render contract accepts it.
 
-    A render that fails is reported and left out, so the approved folder only ever holds renders Bagwork takes.
+    A render that fails is reported and not copied. An approved/<id>.mp4 from an earlier run stays as it was.
     """
     approved.mkdir(exist_ok=True)
     ok = True
     for clip in clips:
         render = MEDIA / "clips" / clip.id / "silhouette.mp4"
         if not render.is_file():
-            problem = f"no {render}; build it first"
-        else:
-            try:
-                problem = render_problem(probe(render), render.stat().st_size)
-            except subprocess.CalledProcessError as e:
-                problem = f"ffprobe cannot read it: {e.stderr.strip()}"
-        if problem:
-            print(f"{clip.id}: FAIL {problem}")
+            print(f"{clip.id}: FAIL no {render}; build it first")
             ok = False
             continue
         dest = approved / f"{clip.id}.mp4"
+        # The check reads the copy, so a build that rewrites silhouette.mp4 mid-approve can't slip past it.
         tmp = approved / f".tmp-{clip.id}.mp4"
         shutil.copyfile(render, tmp)
+        try:
+            problem = render_problem(probe(tmp), tmp.stat().st_size)
+        except subprocess.CalledProcessError as e:
+            problem = f"ffprobe cannot read it: {e.stderr.strip()}"
+        if problem:
+            tmp.unlink()
+            print(f"{clip.id}: FAIL {problem}")
+            ok = False
+            continue
         tmp.replace(dest)
         print(f"{clip.id}: ok, {dest.stat().st_size} bytes, copied to {dest}")
     return ok
