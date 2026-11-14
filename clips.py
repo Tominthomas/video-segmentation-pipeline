@@ -103,8 +103,9 @@ SAM_HOLDER = SAM_LOCK.with_name("sam-holder.json")
 WAIT_REPORT = 30
 MIN_FREE = int(os.environ.get("BAGWORK_MIN_FREE", "30"))
 
-# The best rendition fetch downloads. add reports its size, so a source is judged by what the build will use.
-FETCH_FORMAT = "bv*[height<=1080]+ba/b[height<=1080]"
+# The best rendition fetch downloads. add reports its size, so a source is judged by what the build will use. A direct
+# link to a video file reports no height, so it falls through to the file itself.
+FETCH_FORMAT = "bv*[height<=1080]+ba/b[height<=1080]/b"
 SCENE_SCORE_CUT = 0.4
 
 FILTERS = {
@@ -973,7 +974,7 @@ def scout(url: str) -> Path:
                 "--no-warnings",
                 "--no-playlist",
                 "-f",
-                "bv*[height<=480]+ba/b[height<=480]",
+                "bv*[height<=480]+ba/b[height<=480]/b",
                 "--merge-output-format",
                 "mp4",
                 "-o",
@@ -1039,7 +1040,9 @@ def add(manifest: Path, url: str, player: str, clip_id: str | None) -> None:
     if any(entry["id"] == clip_id for entry in entries):
         sys.exit(f"{manifest} already has {clip_id}; pass a different --id")
     video = scout(url) / "video.mp4"
-    width, height = info["width"], info["height"]
+    # A direct link to a video file reports no size, and its scout copy is that file.
+    scouted = next(s for s in probe(video)["streams"] if s["codec_type"] == "video")
+    width, height = info.get("width") or scouted["width"], info.get("height") or scouted["height"]
     shape = "landscape" if width > height else "portrait" if height > width else "square"
     cuts = ", ".join(f"{t:.1f}s" for t in scene_cuts(video)) or "none"
     print(f"{float(probe(video)['format']['duration']):.1f}s, {width}x{height} {shape}, scene cuts: {cuts}")
