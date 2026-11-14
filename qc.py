@@ -40,6 +40,7 @@ MISSING_RUN = 10
 EDGE = 8
 # Set from five McDaniels clips and Nembhard's six (docs/SPEC.md#matting). Of the McDaniels mattes, the Houston one
 # won blind judging with 10% of frames ghosting, and the ones that lost had 26 to 66%. Nembhard's close clip had 2%.
+# judge.py checks all three against every verdict in judgments.json (docs/SPEC.md#judgments).
 GHOST_FRAME = 0.05
 MATTE_GHOSTING = 0.2
 MATTE_FALLBACK = 0.05
@@ -141,17 +142,19 @@ def ghosting(matte: Matte, sam: np.ndarray) -> np.ndarray:
     return shares
 
 
+def matte_shares(ghost: np.ndarray, fallback: np.ndarray, ghost_frame: float = GHOST_FRAME) -> dict[str, float]:
+    """What the clip-wide matte flags measure, from ghosting()'s per-frame shares and the matte's fallback frames.
+    judge.py passes other values of ghost_frame to find which ones still agree with every judged clip."""
+    return {"matte fallback": float(fallback.mean()), "matte ghosting": float((ghost > ghost_frame).mean())}
+
+
 def matte_flags(matte: Matte, sam: np.ndarray) -> list[dict]:
     """The clip-wide matte flags, given his [frame, h, w] SAM masks."""
     span = [matte.first, matte.first + len(matte.alpha) - 1]
-    measures = {
-        "matte fallback": float(matte.fallback.mean()),
-        "matte ghosting": float((ghosting(matte, sam) > GHOST_FRAME).mean()),
-    }
     limits = {"matte fallback": MATTE_FALLBACK, "matte ghosting": MATTE_GHOSTING}
     return [
         {"check": check, "objects": [], "frames": span, "worst": round(value, 2)}
-        for check, value in measures.items()
+        for check, value in matte_shares(ghosting(matte, sam), matte.fallback).items()
         if value > limits[check]
     ]
 
