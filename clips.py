@@ -342,13 +342,14 @@ def sam_slot(clip: Clip, command: str, log: Path | None = None):
 
 def track_masks(clip: Clip, art: Artifacts, video: Path, objects: list[dict], out: Path) -> None:
     """Run track.py under the SAM slot when an object needs tracking, and record what the run cost in build.json."""
-    python = sam_python(clip)
+    # Fail before queueing for the slot; venv_step checks again once the slot is held.
+    sam_python(clip)
     missing = sum(not Path(obj["cache"]).exists() for obj in objects)
     log = art.folder / "track.log"
     # A fresh log per masks build, so the last run's progress never reads as this one's.
     if not missing:
         log.write_text(f"{time.strftime('%X')} all {len(objects)} objects cached, nothing to track\n")
-        venv_step(clip, TRACK, video, {"objects": objects}, out, python=python)
+        venv_step(clip, TRACK, video, {"objects": objects}, out)
         return
     log.write_text(f"{time.strftime('%X')} queued, waiting for the SAM slot\n")
     print(f"  tracking {missing} of {len(objects)} objects, progress in {log}", flush=True)
@@ -356,7 +357,7 @@ def track_masks(clip: Clip, art: Artifacts, video: Path, objects: list[dict], ou
         with log.open("a") as f:
             f.write(f"{time.strftime('%X')} slot acquired, loading SAM for {missing} of {len(objects)} objects\n")
         started = time.monotonic()
-        venv_step(clip, TRACK, video, {"objects": objects}, out, log, slot=slot, python=python)
+        venv_step(clip, TRACK, video, {"objects": objects}, out, log, slot=slot)
     seconds = round(time.monotonic() - started, 1)
     with log.open("a") as f:
         f.write(f"{time.strftime('%X')} finished tracking in {seconds}s\n")
