@@ -26,6 +26,10 @@ A clip with one mystery player draws his shape one of three ways, set by `"shape
 
 `"auto"`, the default, picks `"detail"` when his median box in `masks.npz` over the render's frames is under 24% of the clip's height and `"matte"` otherwise. Nembhard's five wide clips measure 18 to 20% and his close clip 40%. McDaniels' Houston clip, whose matte won blind judging, is 26%, and `cle-self-lob`, whose matte lost, is 23%. A clip draws one of them, never two. A machine that can't run the chosen pass prints why and draws `"sam"`.
 
+### Approve
+
+`clips.py approve` copies `silhouette.mp4` to `$BAGWORK_CONTENT/approved/<id>.mp4` only if `render_problem` returns nothing. `render_problem` is a pure function of ffprobe's JSON, chapters included, and the file's size. It mirrors `renderProblem` in the bagwork repo's `tools/bagwork/library.ts` check for check. It tests size, audio, the stream count, chapters and then each tag in the same order, and it words each refusal the same way, so a refusal here reads like the one `bagwork clips add` would print. `verify` runs it on `silhouette.mp4` too, so `build` fails a render that Bagwork would refuse. It does not run on `clip.mp4` or the filter variants, because Bagwork never takes them and `clip.mp4` keeps its audio. When the bagwork check changes, change `RENDER_TAGS`, `MAX_RENDER_BYTES` or `render_problem` to match.
+
 ### Prompting
 
 The hoop object's box covers the rim and the net, not the rim alone, so the net shows in the silhouette. Tomin wants the net to show.

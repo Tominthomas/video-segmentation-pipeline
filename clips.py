@@ -4,6 +4,8 @@
   python3 clips.py scout <url>                         frames every second, to pick start/end
   python3 clips.py add --manifest FILE <url> --player NAME [--id ID]   scout, then add a manifest stub
   python3 clips.py build [--manifest FILE] [id ...]    fetch, normalize, filter, verify
+  python3 clips.py approve [--manifest FILE] id ...    check each silhouette.mp4 against Bagwork's render contract,
+                                                       then copy it to $BAGWORK_CONTENT/approved/<id>.mp4
   python3 clips.py preview [--manifest FILE] id        each prompt's mask, before a full track
   python3 clips.py propose [--manifest FILE] id --frame N   numbered player and ball boxes to prompt by
   python3 clips.py review [--manifest FILE] id         build, then a local review.html with overlay and QC
@@ -183,7 +185,7 @@ def run(cmd: list[str]) -> None:
 
 def probe(path: Path) -> dict:
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+        ["ffprobe", "-v", "error", "-of", "json", "-show_format", "-show_streams", "-show_chapters", str(path)],
         capture_output=True,
         text=True,
         check=True,
@@ -540,6 +542,44 @@ def contact_sheet(variants: dict[Path, float], out: Path) -> None:
     run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", graph, "-frames:v", "1", "-f", "image2", str(out)])
 
 
+# Bagwork's render contract, copied from renderProblem in tools/bagwork/library.ts in the bagwork repo, which wins
+# when the two disagree. The Worker streams every clip whole to a phone, so a render stays under this many bytes.
+MAX_RENDER_BYTES = 2_000_000
+# The only tags a render may carry, each with the only values it may have. Any other tag or value is free text that
+# could name the player.
+RENDER_TAGS = {
+    "major_brand": re.compile(r"[a-z0-9]{4}"),
+    "minor_version": re.compile(r"\d+", re.ASCII),
+    "compatible_brands": re.compile(r"[a-z0-9]+"),
+    "encoder": re.compile(r"Lav[fc][\d.]*( libx264)?", re.ASCII),
+    "handler_name": re.compile(r"VideoHandler"),
+    "language": re.compile(r"[a-z]{3}"),
+    "vendor_id": re.compile(r"\[0\]\[0\]\[0\]\[0\]"),
+}
+
+
+def render_problem(info: dict, size: int) -> str | None:
+    """Why Bagwork would refuse a render, given its ffprobe JSON with chapters and its size in bytes, or None.
+
+    It checks in Bagwork's order and words each refusal the way Bagwork does, so the two can be compared directly.
+    """
+    if size >= MAX_RENDER_BYTES:
+        return f"{size} bytes, over the {MAX_RENDER_BYTES} limit"
+    kinds = [s["codec_type"] for s in info["streams"]]
+    if "audio" in kinds:
+        return "it has an audio stream"
+    if kinds != ["video"]:
+        return f"it has {len(kinds)} streams, not one video stream"
+    if info["chapters"]:
+        return f"it has {len(info['chapters'])} chapters"
+    for part in [info["format"], *info["streams"]]:
+        for tag, value in part.get("tags", {}).items():
+            allowed = RENDER_TAGS.get(tag)
+            if allowed is None or not allowed.fullmatch(value):
+                return f"it carries a {tag} tag"
+    return None
+
+
 def verify(outputs: dict[str, Path], lengths: dict[str, float]) -> list[str]:
     problems = []
     for name, path in outputs.items():
@@ -556,6 +596,8 @@ def verify(outputs: dict[str, Path], lengths: dict[str, float]) -> list[str]:
             problems.append(f"{name}: clue variants must have no audio")
         if any(k.lower() in ("title", "comment", "description", "artist") for k in tags):
             problems.append(f"{name}: identifying metadata tags {sorted(tags)}")
+        if name == "silhouette.mp4" and (problem := render_problem(info, path.stat().st_size)):
+            problems.append(f"{name}: {problem}")
     return problems
 
 
@@ -740,6 +782,34 @@ def build(clips: list[Clip]) -> bool:
     return ok
 
 
+def approve(clips: list[Clip], approved: Path) -> bool:
+    """Copy each clip's silhouette.mp4 to approved/<id>.mp4 if Bagwork's render contract accepts it.
+
+    A render that fails is reported and left out, so the approved folder only ever holds renders Bagwork takes.
+    """
+    approved.mkdir(exist_ok=True)
+    ok = True
+    for clip in clips:
+        render = MEDIA / "clips" / clip.id / "silhouette.mp4"
+        if not render.is_file():
+            problem = f"no {render}; build it first"
+        else:
+            try:
+                problem = render_problem(probe(render), render.stat().st_size)
+            except subprocess.CalledProcessError as e:
+                problem = f"ffprobe cannot read it: {e.stderr.strip()}"
+        if problem:
+            print(f"{clip.id}: FAIL {problem}")
+            ok = False
+            continue
+        dest = approved / f"{clip.id}.mp4"
+        tmp = approved / f".tmp-{clip.id}.mp4"
+        shutil.copyfile(render, tmp)
+        tmp.replace(dest)
+        print(f"{clip.id}: ok, {dest.stat().st_size} bytes, copied to {dest}")
+    return ok
+
+
 def scout(url: str) -> Path:
     """Download a small copy of the post and write a sheet of one frame per second, returning the scout folder."""
     video_id = subprocess.run(
@@ -854,6 +924,9 @@ def main() -> None:
     build_cmd = sub.add_parser("build")
     build_cmd.add_argument("--manifest", type=Path, default=SAMPLE_MANIFEST)
     build_cmd.add_argument("ids", nargs="*")
+    approve_cmd = sub.add_parser("approve")
+    approve_cmd.add_argument("--manifest", type=Path, default=SAMPLE_MANIFEST)
+    approve_cmd.add_argument("ids", nargs="+")
     for name in ("preview", "propose", "review"):
         one = sub.add_parser(name)
         one.add_argument("--manifest", type=Path, default=SAMPLE_MANIFEST)
@@ -876,6 +949,9 @@ def main() -> None:
     if args.command == "add":
         add(args.manifest, args.url, args.player, args.id)
         return
+    content = os.environ.get("BAGWORK_CONTENT", "")
+    if args.command == "approve" and not (content and Path(content).is_dir()):
+        sys.exit("approve copies into $BAGWORK_CONTENT/approved; set BAGWORK_CONTENT to an existing folder")
     clips = load_manifest(args.manifest)
     one_clip = {
         "preview": preview,
@@ -894,6 +970,8 @@ def main() -> None:
         if unknown:
             sys.exit(f"unknown clip ids: {', '.join(sorted(unknown))}")
         clips = [c for c in clips if c.id in args.ids]
+    if args.command == "approve":
+        sys.exit(0 if approve(clips, Path(content) / "approved") else 1)
     sys.exit(0 if build(clips) else 1)
 
 
