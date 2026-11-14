@@ -21,6 +21,7 @@ Needs yt-dlp and ffmpeg on PATH. Output goes to media/, which is git-ignored.
 """
 
 import argparse
+import ast
 import fcntl
 import hashlib
 import html
@@ -90,12 +91,6 @@ TRACK_KEYS = ("frame", "objects")
 # Part of every tracked object's cache key. Bump it when a track.py or sam-requirements.txt change alters the masks it
 # writes. tests/test_clips.py fails when the pins change and it does not.
 TRACK_VERSION = 1
-# Part of matte.npz's recipe with matte.py's text. Bump it when a change to the silhouette.py helpers matte.py imports
-# (dilate, erode, shapes, smooth, load) alters the mattes it writes.
-MATTE_VERSION = 1
-# Part of detail.npz's recipe with detail.py's text. Bump it when a change to the matte.py or silhouette.py helpers
-# detail.py imports alters the detail it writes.
-DETAIL_VERSION = 1
 # How the mystery player's shape is drawn (docs/SPEC.md#python-clip-pipeline). "auto" picks "detail" or "matte" by
 # his size.
 SHAPES = ("auto", "detail", "matte", "sam")
@@ -421,6 +416,69 @@ def sam_missing(venv: Path) -> str | None:
     return None
 
 
+def definitions(path: Path) -> dict[str, ast.AST]:
+    """Each top-level name a module defines, by the node that defines it, with docstrings dropped. A name imported
+    from a module beside it maps to that import."""
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and ast.get_docstring(node, clean=False):
+            node.body = node.body[1:] or [ast.Pass()]
+    found: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            found[node.name] = node
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            found |= {n.id: node for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+        elif isinstance(node, ast.ImportFrom) and (path.parent / f"{node.module}.py").exists():
+            found |= {alias.asname or alias.name: node for alias in node.names}
+    return found
+
+
+def model_code(script: Path, entry: str) -> str:
+    """A hash of the code a model step runs: entry in script, and every definition it reaches in the modules beside
+    it, as ast.unparse writes them without docstrings.
+
+    The render rules in matte.py and detail.py sit beside their model steps but are never reached from them, so
+    tuning one leaves the step's artifact current, and a change the step does reach needs no version bump. A method
+    counts as reached when reached code reads an attribute of its name. Third-party code is out, so its pins belong
+    in the recipe.
+    """
+    modules: dict[str, dict[str, ast.AST]] = {}
+    reached: dict[tuple[str, str], str] = {}
+    attributes: set[str] = set()
+    # Each reached class's methods by (module, "Class.method").
+    methods: dict[tuple[str, str], ast.AST] = {}
+    todo = [(script.stem, entry)]
+    while todo:
+        module, name = todo.pop()
+        if module not in modules:
+            modules[module] = definitions(script.parent / f"{module}.py")
+        node = methods.get((module, name)) or modules[module].get(name)
+        if (module, name) in reached or node is None:
+            pass
+        elif isinstance(node, ast.ImportFrom):
+            original = next(a.name for a in node.names if (a.asname or a.name) == name)
+            reached[module, name] = f"from {node.module} import {original}"
+            todo.append((str(node.module), original))
+        else:
+            parts = [node]
+            if isinstance(node, ast.ClassDef):
+                parts = [*node.bases, *(p for p in node.body if not isinstance(p, ast.FunctionDef))]
+                methods |= {(module, f"{name}.{m.name}"): m for m in node.body if isinstance(m, ast.FunctionDef)}
+            reached[module, name] = "\n".join(ast.unparse(p) for p in parts)
+            for sub in (sub for part in parts for sub in ast.walk(part)):
+                if isinstance(sub, ast.Name):
+                    todo.append((module, sub.id))
+                elif isinstance(sub, ast.Attribute):
+                    attributes.add(sub.attr)
+                elif isinstance(sub, ast.ImportFrom) and (script.parent / f"{sub.module}.py").exists():
+                    todo += [(str(sub.module), alias.name) for alias in sub.names]
+        if not todo:
+            todo = [key for key in methods if key[1].split(".")[1] in attributes and key not in reached]
+    return hashlib.sha256(json.dumps(sorted(reached.items())).encode()).hexdigest()
+
+
 def matte_missing() -> str | None:
     """Why this machine can't matte, or None when MatAnyone 2 is installed at its pinned commit and weights."""
     if not MATTE_PYTHON.exists():
@@ -507,14 +565,13 @@ def with_detail(clip: Clip, art: Artifacts, source: Path, render: dict, objects:
     # Avoid points and seeds come from the other players' masks, so they are inputs too.
     players = [Path(obj["cache"]).name for obj in objects if obj["kind"] == "player"]
     recipe = [
-        DETAIL_VERSION,
+        model_code(DETAIL, "make"),
         TRACK_VERSION,
         art.ledger["source.mp4"],
         Path(objects[mystery]["cache"]).name,
         players,
         spec["frames"],
         spec["refines"],
-        DETAIL.read_text(),
     ]
     detail = art.make("detail.npz", recipe, lambda out: detail_step(clip, art, source, spec, out))
     return {**render, "detail": str(detail)}
@@ -537,17 +594,23 @@ def with_matte(clip: Clip, art: Artifacts, source: Path, render: dict, objects: 
     # Seeds avoid the other players, so their masks are inputs too. The ball's and hoop's are not.
     players = [Path(obj["cache"]).name for obj in objects if obj["kind"] == "player"]
     recipe = [
-        MATTE_VERSION,
+        model_code(MATTE, "main"),
         art.ledger["source.mp4"],
         Path(objects[spec["mystery"]]["cache"]).name,
         players,
         spec["frames"],
         MATANYONE_COMMIT,
         MATTE_WEIGHTS_SHA256,
-        MATTE.read_text(),
     ]
     matte = art.make("matte.npz", recipe, lambda out: matte_step(clip, art, source, spec, out))
     return {**render, "matte": str(matte)}
+
+
+def drawn_by(art: Artifacts, drawn: str | None) -> list:
+    """What qc.json and silhouette.mp4 take from the matte.npz or detail.npz that draws the mystery player, if one
+    does: its recipe, and the rules in matte.py and detail.py that qc.py and silhouette.py apply to it. The artifact
+    holds only model output, so a change to those rules re-renders without re-running the model."""
+    return [art.ledger[Path(drawn).name], MATTE.read_text(), DETAIL.read_text()] if drawn else []
 
 
 def silhouette(clip: Clip, masks: Path, render: dict, out: Path) -> None:
@@ -787,11 +850,8 @@ def build(clips: list[Clip]) -> bool:
                 lambda out: track_masks(clip, art, outputs["clip.mp4"], objects, out),
             )
             render = with_shape(clip, art, source, render, objects)
-            # The shape's artifact, and for the detail pass the rules in detail.py that qc.py and silhouette.py apply.
             drawn = next((render[k] for k in ("matte", "detail") if k in render), None)
-            shaped = [art.ledger[Path(drawn).name]] if drawn else []
-            if "detail" in render:
-                shaped.append(DETAIL.read_text())
+            shaped = drawn_by(art, drawn)
             qc = art.make(
                 "qc.json",
                 [QC.read_text(), SILHOUETTE.read_text(), render["mystery"], art.ledger["masks.npz"], *shaped],

@@ -16,6 +16,8 @@ This spec says how the repo turns a clip manifest into the silhouette renders th
 | `qc.json` | `qc.py` | `masks.npz` and `matte.npz` or `detail.npz` |
 | `silhouette.mp4` | `silhouette.py`, then ffmpeg | `masks.npz`, `matte.npz` or `detail.npz`, and the render spec |
 
+`matte.npz` and `detail.npz` hold only the model's output and the crop it ran on. Every rule that turns them into his layer, picks the frames that fall back to `masks.npz`, or flags them in QC runs at render time, so tuning one re-renders in seconds and never re-runs the model. Their recipes take `model_code` in `clips.py`, a hash of the code the step's entry point reaches in the checkout's own modules, with docstrings and comments left out, in place of the scripts' text. A change the step reaches re-runs the model with no version to bump. A rule beside it in the same file that the step never reaches does not. `qc.json` and `silhouette.mp4` take the text of `matte.py` and `detail.py`, which hold those rules. The hash is of `ast.unparse` output, so a Python upgrade that changes how that writes code re-runs every model once.
+
 A clip with one mystery player draws his shape one of three ways, set by `"shape"` in its track spec.
 
 | `"shape"` | His layer | When it wins |
@@ -64,8 +66,7 @@ SAM's masks are 720p and blocky at a player's edge, so hands and the ball handle
 | `source_frames` | int `[n]` | the source frame each clip frame was matted from |
 | `seeds` | int `[k]` | the clip frames that seeded the model |
 | `flashes` | int `[m]` | the clip frames dimmed to their neighbours before the model saw them |
-| `gate` | int | the gate and core width in clip pixels |
-| `fallback` | bool `[n]` | the frames that draw SAM's silhouette instead |
+| `height` | float | his median box height in clip pixels, which the gate is a share of |
 
 **How `matte.py` makes it.**
 
@@ -73,12 +74,12 @@ SAM's masks are 720p and blocky at a player's edge, so hands and the ball handle
 - **Crop.** A square that follows his smoothed SAM box, 1.5 times the 95th percentile of his box's longer side, in source pixels. The model sees it at 960 pixels. When the square would not fit the source, the crop is the whole frame.
 - **Flashes.** A frame more than 15% brighter than the median of the three frames either side of it is a camera flash. It is scaled to that median before the model sees it.
 - **Seeds.** A seed is a frame where his SAM mask, grown by 12 pixels, touches no other player and his area is within 20% of his median. One seed per stretch of 60 frames keeps a lost matte from running far. Each seed mattes the frames nearer to it than to any other seed, forward and backward.
-- **Refine.** A levels curve `clip((a - 0.12) / 0.5, 0, 1)` stops motion blur ghosting. The result is limited to his SAM mask grown by `gate`, which is 4% of his median height and at least 3 pixels, so it can't drift onto a defender. Inside his SAM mask shrunk by `gate` it is solid, which fills holes.
-- **Fallback.** A frame whose refined matte overlaps his SAM mask with an IoU under 0.5 falls back to SAM.
+- **Refine.** At render time, a levels curve `clip((a - 0.12) / 0.5, 0, 1)` stops motion blur ghosting. The result is limited to his SAM mask grown by the gate, which is 4% of `height` and at least 3 pixels, so it can't drift onto a defender. Inside his SAM mask shrunk by the gate it is solid, which fills holes.
+- **Fallback.** At render time, a frame whose refined matte overlaps his SAM mask with an IoU under 0.5 falls back to SAM.
 
 The model step runs under the SAM slot with the same `BAGWORK_MIN_FREE` gate, because it shares the GPU. It runs about 0.65 s a frame on an M4 and peaks near 8 GB.
 
-**Cache recipe.** `MATTE_VERSION` in `clips.py`, bumped when a `silhouette.py` helper that `matte.py` imports changes, the `source.mp4` hash, the mystery player's mask cache key and the other players' keys, because seeds avoid them, the render's frames, the crop and seed settings in `matte.py`, the MatAnyone 2 commit, the weights' sha256, and the text of `matte.py`. Seeds come from those masks by code in `matte.py`, so the key covers them.
+**Cache recipe.** The code `matte.py`'s `main` reaches, which holds the crop and seed settings, the `source.mp4` hash, the mystery player's mask cache key and the other players' keys, because seeds avoid them, the render's frames, the MatAnyone 2 commit and the weights' sha256. Seeds come from those masks by code `main` reaches, so the key covers them.
 
 **How `silhouette.py` reads it.** `clips.py` passes the matte's path in the render spec. With a matte, the mystery player's layer is the refined alpha, sampled from source pixels straight to the output, and every layer renders at 720 tall, or the source's height when that is less. A fallback frame draws his SAM mask. Without a matte, the render is the same as before matting existed, at the crop's own size, and ffmpeg scales it to 720.
 
@@ -129,16 +130,15 @@ Prototyping on Nembhard's clips settled four things. SAM's video mode over the c
 | `height` | float | his median box height in clip pixels, which every width below is a share of |
 | `seeds` | int `[k]` | the clip frames prompted from his mask in `masks.npz` |
 | `refines` | int `[m]` | the clip frames prompted by the manifest's detail refines |
-| `fallback` | bool `[n]` | the frames that draw his mask from `masks.npz` instead |
 
-`prob` keeps SAM's raw output, before the ownership rule, so that rule, the speckle rule and their QC run on it at render time and a change to them never re-runs the model.
+`prob` keeps SAM's raw output, before the ownership rule, so that rule, the speckle rule, the fallback and their QC run on it at render time and a change to them never re-runs the model.
 
 **How `detail.py` makes it.**
 
 - **Frame map and crop.** The matte's: the source frame that best matches each clip frame, and a square that follows his smoothed box, 1.5 times the 95th percentile of its longer side, or the whole frame when that doesn't fit. SAM sees each crop at its source size and scales it to 1024 itself.
 - **Prompts.** Each seed frame, picked by the matte's seed rule, gets his box from `masks.npz` padded by 4% of his height, one keep point deep inside each third of his mask from top to bottom, and one avoid point deep inside each other player's mask in the crop. Every prompt maps clip pixels to crop pixels through the crop's origin and the source's scale.
 - **Model.** SAM 2.1 small in video mode over the crop sequence, forward from the first prompted frame and back from it, under the SAM slot with the same `BAGWORK_MIN_FREE` gate. Its state stays on the GPU: offloaded, SAM copies each mask to the CPU without waiting, and the masks propagation yields read as empty. On Nembhard's wide clips, with crops of 432 to 528 pixels, it runs about 0.5 s a frame and the build peaks at 5.6 to 6.9 GB resident.
-- **Fallback.** A frame where his mask in `masks.npz` is empty, or where his owned mask scaled to the clip overlaps it with an IoU under 0.3, draws his mask from `masks.npz`. The bar is low because the 720p mask is the coarse one. On `den-handles` the two agree at a median IoU of 0.9 and a 10th percentile of 0.8 when the detail pass is right.
+- **Fallback.** At render time, a frame where his mask in `masks.npz` is empty, or where his owned mask scaled to the clip overlaps it with an IoU under 0.3, draws his mask from `masks.npz`. The bar is low because the 720p mask is the coarse one. On `den-handles` the two agree at a median IoU of 0.9 and a 10th percentile of 0.8 when the detail pass is right.
 
 **Ownership.** His mask in `masks.npz` decides who is who, and `prob` decides his edge. Per crop pixel, with `p` its probability:
 
@@ -165,7 +165,7 @@ The prototype cut his leg on `den-handles` frame 52 and `okc-pullup-close` frame
 
 Each points the review at a frame to look at with `crops --detail` and maybe fix with a refine.
 
-**Cache recipe.** `DETAIL_VERSION` in `clips.py`, bumped when a `silhouette.py` or `matte.py` helper that `detail.py` imports changes, the `source.mp4` hash, the mystery player's mask cache key and the other players' keys, because the avoid points come from them, the render's frames, the detail refines, `TRACK_VERSION`, which a change of SAM model bumps, and the text of `detail.py`. `silhouette.mp4` and `qc.json` add the text of `detail.py` too, because they apply its rules.
+**Cache recipe.** The code `detail.py`'s `make` reaches, which holds the prompt settings, the `source.mp4` hash, the mystery player's mask cache key and the other players' keys, because the avoid points come from them, the render's frames, the detail refines, and `TRACK_VERSION`, which a change of SAM model bumps.
 
 **How `silhouette.py` reads it.** `clips.py` passes its path as `"detail"` in the render spec. His layer is the owned alpha, sampled from source pixels to the output like the matte's, at 720 tall. A fallback frame draws his mask from `masks.npz`. The ball's gap is closed as above.
 

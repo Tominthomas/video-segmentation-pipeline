@@ -20,19 +20,18 @@ def body(x0=12, y0=6, x1=28, y1=26) -> np.ndarray:
     return mask
 
 
-def matte_of(alpha: np.ndarray, gate=2, fallback=False) -> Matte:
-    """A one-frame matte whose crop is the whole 40x30 frame, at the same size as the clip."""
+def matte_of(alpha: np.ndarray) -> Matte:
+    """A one-frame matte whose crop is the whole 40x30 frame, at the same size as the clip, with a gate of 3."""
     return Matte(
         alpha=alpha[None],
         first=0,
         origin=np.zeros((1, 2), int),
         crop=SIZE,
         source=SIZE,
-        gate=gate,
+        height=20.0,
         source_frames=np.zeros(1, int),
         seeds=np.zeros(1, int),
         flashes=np.zeros(0, int),
-        fallback=np.asarray([fallback]),
     )
 
 
@@ -63,29 +62,32 @@ class Refine(unittest.TestCase):
 
     def test_the_gate_cuts_matte_beyond_his_grown_mask(self):
         alpha = np.full(SIZE[::-1], 255, np.uint8)
-        refined = matte_of(alpha).source_alpha(0, body())
+        refined = matte_of(alpha).source_alpha(0, body(y0=9))
         self.assertLess(refined[15, 36], 0.01)
         self.assertLess(refined[0, 20], 0.05)
         self.assertGreater(refined[15, 28], 0.4)
 
     def test_the_core_is_solid_where_the_matte_left_a_hole(self):
         alpha = np.zeros(SIZE[::-1], np.uint8)
-        refined = matte_of(alpha).source_alpha(0, body())
+        refined = matte_of(alpha).source_alpha(0, body(x0=8, x1=32))
         self.assertGreater(refined[16, 20], 0.99)
-        self.assertLess(refined[6, 12], 0.5)
+        self.assertLess(refined[6, 8], 0.5)
 
     def test_a_window_maps_each_axis_by_its_own_ratio(self):
         matte = matte_of(np.full((30, 42), 255, np.uint8))._replace(crop=(42, 30), source=(42, 30))
-        alpha = matte.window_alpha(0, body(), (0, 0, 40, 30), (80, 60))
+        alpha = matte.layer(0, body(), body(), (0, 0, 40, 30), (80, 60))
+        assert alpha is not None, "the frame draws his shape, not his mask"
         self.assertEqual(alpha.shape, (60, 80))
 
     def test_a_matte_that_agrees_with_sam_is_kept(self):
         alpha = body().astype(np.uint8) * 255
-        self.assertFalse(matte_of(alpha).falls_back(0, body()))
+        self.assertEqual(matte_of(alpha).fallback(body()[None]).tolist(), [False])
 
     def test_a_frame_whose_matte_lost_him_falls_back_to_sam(self):
         thin = body(x0=19, x1=21)
-        self.assertTrue(matte_of(np.zeros(SIZE[::-1], np.uint8)).falls_back(0, thin))
+        lost = matte_of(np.zeros(SIZE[::-1], np.uint8))
+        self.assertEqual(lost.fallback(thin[None]).tolist(), [True])
+        self.assertIsNone(lost.layer(0, thin, thin, (0, 0, 40, 30), SIZE))
 
 
 class Geometry(unittest.TestCase):
@@ -121,7 +123,7 @@ class Flags(unittest.TestCase):
         sam = body()[None]
         ghost = matte_of(np.zeros(SIZE[::-1], np.uint8))
         self.assertEqual(ghosting(ghost, sam).tolist(), [1.0])
-        self.assertEqual([f["check"] for f in matte_flags(ghost, sam)], ["matte ghosting"])
+        self.assertIn("matte ghosting", [f["check"] for f in matte_flags(ghost, sam)])
 
     def test_a_clean_matte_has_no_flags(self):
         sam = body()[None]
@@ -129,9 +131,9 @@ class Flags(unittest.TestCase):
         self.assertEqual(matte_flags(clean, sam), [])
 
     def test_fallback_frames_are_flagged(self):
-        sam = body()[None]
-        fell = matte_of(body().astype(np.uint8) * 255, fallback=True)
-        self.assertEqual([f["check"] for f in matte_flags(fell, sam)], ["matte fallback"])
+        thin = body(x0=19, x1=21)[None]
+        fell = matte_of(np.zeros(SIZE[::-1], np.uint8))
+        self.assertIn("matte fallback", [f["check"] for f in matte_flags(fell, thin)])
 
 
 class BallEdge(unittest.TestCase):

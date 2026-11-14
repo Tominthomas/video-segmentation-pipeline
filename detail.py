@@ -21,7 +21,7 @@ import numpy as np
 from PIL import Image
 
 from matte import crop_origins, crop_size, frame_map, iou, read_crops, resize, seeds, thumbnails, video_info
-from silhouette import dilate, erode, load, others_of, runs, shapes
+from silhouette import dilate, erode, load, others_of, shapes
 
 FPS = 30
 # "auto" takes the detail pass when his median box is under this share of the clip's height, the matte otherwise.
@@ -225,7 +225,9 @@ def prompts(kinds: list[str], masks: np.ndarray, mystery: int, height: float, re
 
 
 class Detail(NamedTuple):
-    """One clip's detail.npz: SAM's probability that each crop pixel is him per frame, and where that crop sits."""
+    """One clip's detail.npz: SAM's probability that each crop pixel is him per frame, and where that crop sits. It
+    holds only what the model and his 720p masks give, so the ownership, speckle and fallback rules apply at render
+    time and tuning them never re-runs the model."""
 
     prob: np.ndarray
     first: int
@@ -236,7 +238,6 @@ class Detail(NamedTuple):
     height: float
     seeds: np.ndarray
     refines: np.ndarray
-    fallback: np.ndarray
 
     def frames(self) -> range:
         return range(self.first, self.first + len(self.prob))
@@ -267,18 +268,34 @@ class Detail(NamedTuple):
 
     def layer(
         self, frame: int, his: np.ndarray, others: np.ndarray, box: tuple[int, int, int, int], size: tuple[int, int]
-    ) -> np.ndarray:
-        """His coverage over the window box (x0, y0, x1, y1) in clip pixels, sampled from the source to size."""
+    ) -> np.ndarray | None:
+        """His coverage over the window box (x0, y0, x1, y1) in clip pixels, sampled from the source to size, or None
+        on a frame that falls back to his 720p mask."""
+        owned = self.owned(frame, his, others)
+        if self.falls_back(frame, owned, his):
+            return None
         rx, ry = scale(his.shape[::-1], self.source)
         w, h = self.source
         window = (box[0] * rx, box[1] * ry, min(box[2] * rx, w), min(box[3] * ry, h))
-        full = self.source_coverage(frame, self.owned(frame, his, others))
-        return np.clip(resize(full, size, window), 0, 1)
+        return np.clip(resize(self.source_coverage(frame, owned), size, window), 0, 1)
 
     def clip_iou(self, frame: int, owned: Owned, his: np.ndarray) -> float:
         """How well the owned mask, scaled to the clip, overlaps his 720p mask."""
         small = resize(self.source_coverage(frame, owned), his.shape[::-1]) >= 0.5
         return iou(small, his)
+
+    def falls_back(self, frame: int, owned: Owned, his: np.ndarray) -> bool:
+        """Whether the frame draws his 720p mask: he is absent from it, or his owned mask overlaps it under MIN_IOU."""
+        return not his.any() or self.clip_iou(frame, owned, his) < MIN_IOU
+
+    def fallback(self, kinds: list[str], masks: np.ndarray, mystery: int) -> np.ndarray:
+        """Per frame of the pass, whether it falls back to his 720p mask, given every object's [frame, object, h, w]
+        masks."""
+        fell = []
+        for f in self.frames():
+            his = masks[f, mystery]
+            fell.append(self.falls_back(f, self.owned(f, his, others_of(kinds, masks[f], mystery)), his))
+        return np.asarray(fell, bool)
 
     def save(self, path: Path) -> None:
         tmp = path.with_name(f".tmp-{path.name}")
@@ -301,7 +318,6 @@ class Detail(NamedTuple):
             height=float(data["height"]),
             seeds=data["seeds"],
             refines=data["refines"],
-            fallback=data["fallback"],
         )
 
 
@@ -348,12 +364,9 @@ def choose_main(masks_path: Path, spec: dict, out: Path) -> None:
     out.write_text(json.dumps({"shape": choose(share), "share": share}))
 
 
-def main() -> None:
-    if sys.argv[1] == "--choose":
-        choose_main(Path(sys.argv[2]), json.loads(Path(sys.argv[3]).read_text()), Path(sys.argv[4]))
-        return
-    source, spec_path, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
-    spec = json.loads(spec_path.read_text())
+def make(source: Path, spec: dict, out: Path) -> None:
+    """Write the detail pass's detail.npz. clips.py keys the file on the code this reaches, so keep render rules out
+    of it."""
     kinds, masks = load(Path(spec["masks"]))
     mystery = spec["mystery"]
     first, end = spec["frames"] or (0, len(masks))
@@ -374,7 +387,6 @@ def main() -> None:
             height=0.0,
             seeds=np.zeros(0, int),
             refines=np.zeros(0, int),
-            fallback=np.ones(end - first, bool),
         ).save(out)
         return
     tall = float(np.nanmedian(box[:, 3] - box[:, 1]))
@@ -402,7 +414,7 @@ def main() -> None:
     started = time.monotonic()
     prob = run_model(crops, prompted)
     seconds = time.monotonic() - started
-    detail = Detail(
+    Detail(
         prob=prob,
         first=first,
         origin=origin,
@@ -412,21 +424,15 @@ def main() -> None:
         height=tall,
         seeds=np.asarray(picked, int),
         refines=np.asarray(sorted(refines), int),
-        fallback=np.zeros(len(prob), bool),
-    )
-    fallback = []
-    for f in detail.frames():
-        his = masks[f, mystery]
-        owned = detail.owned(f, his, others_of(kinds, masks[f], mystery))
-        fallback.append(not his.any() or detail.clip_iou(f, owned, his) < MIN_IOU)
-    detail = detail._replace(fallback=np.asarray(fallback))
-    detail.save(out)
-    fell = runs(np.flatnonzero(detail.fallback) + first)
-    print(
-        f"  detail of {len(prob)} frames in {seconds:.0f}s at crop {crop[0]}x{crop[1]}; 720p fallback on "
-        f"{detail.fallback.sum()}" + (f" {fell}" if fell else ""),
-        flush=True,
-    )
+    ).save(out)
+    print(f"  detail of {len(prob)} frames in {seconds:.0f}s at crop {crop[0]}x{crop[1]}", flush=True)
+
+
+def main() -> None:
+    if sys.argv[1] == "--choose":
+        choose_main(Path(sys.argv[2]), json.loads(Path(sys.argv[3]).read_text()), Path(sys.argv[4]))
+        return
+    make(Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text()), Path(sys.argv[3]))
 
 
 if __name__ == "__main__":

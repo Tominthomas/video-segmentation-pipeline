@@ -1,13 +1,18 @@
+import contextlib
 import hashlib
+import io
 import json
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import clips  # noqa: E402
 from clips import SAM_PINS, TRACK_VERSION, sam_missing  # noqa: E402
 
 # New pins can change the masks track.py writes, and old masks stay cached under the same TRACK_VERSION, so changing
@@ -74,6 +79,91 @@ class SamPins(unittest.TestCase):
                 json.dumps({"url": "file:///src/torch", "dir_info": {"editable": True}})
             )
             self.assertIn("has torch @ file:///src/torch", str(sam_missing(editable)))
+
+
+class ShapeRecipes(unittest.TestCase):
+    """A matte.npz or detail.npz rebuilds only when its model step's code changes, and the renders follow the rules."""
+
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        self.code = tmp / "code"
+        self.code.mkdir()
+        for script in ROOT.glob("*.py"):
+            shutil.copy(script, self.code)
+        folder = tmp / "clip"
+        folder.mkdir()
+        self.art = clips.Artifacts(folder)
+        self.art.ledger["source.mp4"] = "source"
+        self.clip = clips.Clip(id="c", player="p", title="t", url="u", track=json.dumps({"objects": [{}, {}]}))
+        self.objects = [{"kind": "player", "cache": str(folder / "objects" / f"{n}.npz")} for n in "ab"]
+        self.runs = []
+        for step in ("detail_step", "matte_step"):
+            patch = mock.patch.object(clips, step, lambda *args, step=step: self.ran(step, args[-1]))
+            patch.start()
+            self.addCleanup(patch.stop)
+        for name, path in (("DETAIL", self.code / "detail.py"), ("MATTE", self.code / "matte.py")):
+            patch = mock.patch.object(clips, name, path)
+            patch.start()
+            self.addCleanup(patch.stop)
+        patch = mock.patch.object(clips, "matte_missing", lambda: None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def ran(self, step: str, out: Path) -> None:
+        self.runs.append(step)
+        out.write_bytes(b"model output")
+
+    def build(self) -> list:
+        """Make both shape artifacts, and return what the qc.json and silhouette.mp4 recipes take from each."""
+        render = {"mystery": [0]}
+        with contextlib.redirect_stdout(io.StringIO()):
+            detail = clips.with_detail(self.clip, self.art, Path("source.mp4"), render, self.objects)["detail"]
+            matte = clips.with_matte(self.clip, self.art, Path("source.mp4"), render, self.objects)["matte"]
+        return [clips.drawn_by(self.art, detail), clips.drawn_by(self.art, matte)]
+
+    def edit(self, script: str, old: str, new: str) -> None:
+        path = self.code / script
+        text = path.read_text()
+        self.assertIn(old, text)
+        path.write_text(text.replace(old, new))
+
+    def test_tuning_a_render_rule_re_renders_without_re_running_a_model(self):
+        before = self.build()
+        self.edit("detail.py", "SURE = 0.65", "SURE = 0.7")
+        self.edit("matte.py", "LEVELS = (0.12, 0.5)", "LEVELS = (0.1, 0.5)")
+        self.edit("matte.py", "GATE = 0.04", "GATE = 0.05")
+        after = self.build()
+        self.assertEqual(self.runs, ["detail_step", "matte_step"])
+        self.assertNotEqual(before[0], after[0])
+        self.assertNotEqual(before[1], after[1])
+
+    def test_a_comment_docstring_or_unreached_function_re_runs_nothing(self):
+        self.build()
+        self.edit(
+            "detail.py",
+            '    kinds, masks = load(Path(spec["masks"]))\n',
+            '    # A note.\n    kinds, masks = load(Path(spec["masks"]))\n',
+        )
+        self.edit("matte.py", '"""The model\'s alpha on every crop as uint8.', '"""The alpha on every crop as uint8.')
+        self.edit("silhouette.py", "def dilate(", "def unused_by_models():\n    return 0\n\n\ndef dilate(")
+        self.build()
+        self.assertEqual(self.runs, ["detail_step", "matte_step"])
+
+    def test_changing_what_a_model_step_reaches_re_runs_that_model(self):
+        self.build()
+        self.edit("detail.py", "BOX_PAD = 0.04", "BOX_PAD = 0.05")
+        self.build()
+        self.assertEqual(self.runs, ["detail_step", "matte_step", "detail_step"])
+        self.edit("matte.py", "MODEL_SIDE = 960", "MODEL_SIDE = 1024")
+        self.build()
+        self.assertEqual(self.runs[3:], ["matte_step"])
+
+    def test_changing_a_helper_both_model_steps_import_re_runs_both(self):
+        self.build()
+        self.edit("silhouette.py", "    if radius <= 0 or not len(ys):", "    if radius < 0 or not len(ys):")
+        self.build()
+        self.assertEqual(self.runs, ["detail_step", "matte_step", "detail_step", "matte_step"])
 
 
 if __name__ == "__main__":

@@ -153,7 +153,7 @@ def matte_flags(matte: Matte, sam: np.ndarray) -> list[dict]:
     limits = {"matte fallback": MATTE_FALLBACK, "matte ghosting": MATTE_GHOSTING}
     return [
         {"check": check, "objects": [], "frames": span, "worst": round(value, 2)}
-        for check, value in matte_shares(ghosting(matte, sam), matte.fallback).items()
+        for check, value in matte_shares(ghosting(matte, sam), matte.fallback(sam)).items()
         if value > limits[check]
     ]
 
