@@ -1,6 +1,6 @@
 # video-segmentation-pipeline spec
 
-This spec says how the repo turns a clip manifest into the silhouette renders that Bagwork serves. [README.md](../README.md) says how to run it. Bagwork itself lives in `Tominthomas/sports-playground`, and the only thing it takes from here is a render that meets [the render contract](../README.md#the-render-contract).
+This spec says how the repo turns a clip manifest into the silhouette renders that Bagwork serves. [README.md](../README.md) says how to run it. Bagwork itself lives in `Tominthomas/bagwork`, and the only thing it takes from here is a render that meets [the render contract](../README.md#the-render-contract).
 
 ## Python: clip pipeline
 

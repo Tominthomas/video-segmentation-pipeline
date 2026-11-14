@@ -1,6 +1,6 @@
 # video-segmentation-pipeline
 
-`clips.py` fetches NBA highlight clips and renders the silhouette clues for [Bagwork](https://github.com/Tominthomas/sports-playground), a daily guess-the-player game. [docs/SPEC.md](docs/SPEC.md) explains how each artifact is made.
+`clips.py` fetches NBA highlight clips and renders the silhouette clues for [Bagwork](https://github.com/Tominthomas/bagwork), a daily guess-the-player game. [docs/SPEC.md](docs/SPEC.md) explains how each artifact is made.
 
 ## Checks
 
