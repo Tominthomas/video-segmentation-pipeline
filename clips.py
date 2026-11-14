@@ -67,8 +67,7 @@ ENCODE = [
 
 # Each clue variant hides faces and jersey text with one whole-frame look.
 # The blur runs before recoloring so small digits smear instead of turning into crisp edges.
-# SAM 2 and every pipeline script run in one venv outside the checkout, so every worktree shares one install. Its
-# packages are pinned in sam-requirements.txt, because masks are cached by TRACK_VERSION and not by these versions.
+# SAM 2 and every pipeline script run in one venv outside the checkout, so every worktree shares one install.
 SAM_VENV = Path.home() / ".local" / "share" / "bagwork" / "sam" / "venv"
 SAM_PYTHON = SAM_VENV / "bin" / "python"
 SAM_PINS = ROOT / "sam-requirements.txt"
@@ -261,12 +260,11 @@ def venv_step(
     log: Path | None = None,
     flags: tuple[str, ...] = (),
     slot: int | None = None,
-    python: Path = SAM_PYTHON,
+    python: Path | None = None,
 ) -> None:
     """Run a pipeline script in a venv, the SAM venv by default, exiting on failure. A held SAM slot's fd passes to
     the script."""
-    if python == SAM_PYTHON and (reason := sam_missing(SAM_VENV)):
-        sys.exit(f"{clip.id}: {reason}. README.md#silhouettes installs it")
+    python = python or sam_python(clip)
     with tempfile.TemporaryDirectory() as tmp, Path(log or os.devnull).open("a") as log_file:
         spec_path = Path(tmp) / "spec.json"
         spec_path.write_text(json.dumps(spec))
@@ -344,12 +342,13 @@ def sam_slot(clip: Clip, command: str, log: Path | None = None):
 
 def track_masks(clip: Clip, art: Artifacts, video: Path, objects: list[dict], out: Path) -> None:
     """Run track.py under the SAM slot when an object needs tracking, and record what the run cost in build.json."""
+    python = sam_python(clip)
     missing = sum(not Path(obj["cache"]).exists() for obj in objects)
     log = art.folder / "track.log"
     # A fresh log per masks build, so the last run's progress never reads as this one's.
     if not missing:
         log.write_text(f"{time.strftime('%X')} all {len(objects)} objects cached, nothing to track\n")
-        venv_step(clip, TRACK, video, {"objects": objects}, out)
+        venv_step(clip, TRACK, video, {"objects": objects}, out, python=python)
         return
     log.write_text(f"{time.strftime('%X')} queued, waiting for the SAM slot\n")
     print(f"  tracking {missing} of {len(objects)} objects, progress in {log}", flush=True)
@@ -357,7 +356,7 @@ def track_masks(clip: Clip, art: Artifacts, video: Path, objects: list[dict], ou
         with log.open("a") as f:
             f.write(f"{time.strftime('%X')} slot acquired, loading SAM for {missing} of {len(objects)} objects\n")
         started = time.monotonic()
-        venv_step(clip, TRACK, video, {"objects": objects}, out, log, slot=slot)
+        venv_step(clip, TRACK, video, {"objects": objects}, out, log, slot=slot, python=python)
     seconds = round(time.monotonic() - started, 1)
     with log.open("a") as f:
         f.write(f"{time.strftime('%X')} finished tracking in {seconds}s\n")
@@ -385,6 +384,13 @@ def track_objects(spec: dict, folder: Path, clip_hash: str) -> list[dict]:
     return objects
 
 
+def sam_python(clip: Clip) -> Path:
+    """The SAM venv's python, exiting when the venv differs from sam-requirements.txt."""
+    if reason := sam_missing(SAM_VENV):
+        sys.exit(f"{clip.id}: {reason}. README.md#silhouettes installs it")
+    return SAM_PYTHON
+
+
 def pin(line: str) -> tuple[str, str]:
     """A pip freeze line as its package's normalized name and the rest, such as ("torch", "==2.15.0")."""
     name = re.split(r"[=@ ]", line, maxsplit=1)[0]
@@ -392,16 +398,20 @@ def pin(line: str) -> tuple[str, str]:
 
 
 def sam_missing(venv: Path) -> str | None:
-    """Why the SAM venv can't run, or None when it holds every package at the version sam-requirements.txt pins.
-    A drifted install would write masks from another model under the old cache keys."""
-    if not (venv / "bin" / "python").exists():
+    """Why the SAM venv can't run, or None when it holds every package at the version sam-requirements.txt pins."""
+    cfg = venv / "pyvenv.cfg"
+    if not (venv / "bin" / "python").exists() or not cfg.exists():
         return f"no SAM venv at {venv}"
+    # Read the site-packages of the python the venv was made with, not every lib/python* left in it.
+    version = re.search(r"^version\s*=\s*(\d+\.\d+)", cfg.read_text(), re.MULTILINE)
+    site = venv / "lib" / f"python{version[1] if version else ''}" / "site-packages"
     installed = {}
-    for dist in importlib.metadata.distributions(path=[str(p) for p in venv.glob("lib/python*/site-packages")]):
+    for dist in importlib.metadata.distributions(path=[str(site)]):
         url = json.loads(dist.read_text("direct_url.json") or "{}")
         vcs = url.get("vcs_info")
-        name = dist.metadata["Name"]
-        installed[pin(name)[0]] = f" @ {vcs['vcs']}+{url['url']}@{vcs['commit_id']}" if vcs else f"=={dist.version}"
+        # An install from a URL or a local dir, editable ones included, never matches a == pin.
+        source = f" @ {vcs['vcs']}+{url['url']}@{vcs['commit_id']}" if vcs else f" @ {url['url']}" if url else None
+        installed[pin(dist.metadata["Name"])[0]] = source or f"=={dist.version}"
     for line in SAM_PINS.read_text().splitlines():
         name, wanted = pin(line)
         if (have := installed.get(name)) != wanted:
@@ -785,7 +795,7 @@ def build(clips: list[Clip]) -> bool:
                 "qc.json",
                 [QC.read_text(), SILHOUETTE.read_text(), render["mystery"], art.ledger["masks.npz"], *shaped],
                 lambda out: run(
-                    [str(SAM_PYTHON), str(QC), str(masks), json.dumps(render["mystery"]), str(out)]
+                    [str(sam_python(clip)), str(QC), str(masks), json.dumps(render["mystery"]), str(out)]
                     + ([drawn] if drawn else [])
                 ),
             )

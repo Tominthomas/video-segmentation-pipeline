@@ -1,6 +1,6 @@
 """Flag frame ranges where tracked masks look wrong, so a review starts at the suspect frames.
 
-Run by clips.py with the SAM venv's python:  python qc.py <masks.npz> <mystery> <qc.json> [shape]
+Run by clips.py with the project venv:  .venv/bin/python qc.py <masks.npz> <mystery> <qc.json> [shape]
 [shape] is the clip's matte.npz or detail.npz, whichever draws the mystery player.
 <mystery> is a JSON list of the objects the manifest marks as the mystery player.
 qc.json holds {"flags": [{"check", "objects", "frames": [first, last], "worst"}]}, one entry per run of

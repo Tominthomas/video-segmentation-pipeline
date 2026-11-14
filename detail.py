@@ -1,6 +1,6 @@
 """Segment the mystery player with his own SAM 2.1 pass on a crop that follows him in the full-resolution source.
 
-Run by clips.py with the SAM venv's python:  python detail.py <source.mp4> <detail.json> <detail.npz>
+Run by clips.py with the project venv:  .venv/bin/python detail.py <source.mp4> <detail.json> <detail.npz>
 detail.json is {"clip", "masks", "mystery", "frames", "refines"}: clip.mp4, masks.npz, the mystery player's object
 index, the render's [first, end) frames or null for all, and his detail refines [{"frame", "points", "avoid",
 "box"?}] in clip pixels. With --choose first it reads masks.npz in place of the source, takes {"mystery", "frames"},
