@@ -42,7 +42,7 @@ SAM2_BUILD_CUDA=0 $S/venv/bin/pip install --no-deps -r sam-requirements.txt
 
 The `track` entry also picks the crop: `"follow": "holder"` (the player with the ball; at the release it eases out to keep the shooter and the hoop in frame), `"ball"`, or `"action"` (every player and the hoop, the default), with `"zoom"` (default 2) for the first two.
 
-Before changing a threshold in `detail.py` or `qc.py`, score it against the recorded verdicts with `.venv/bin/python judge.py $BAGWORK_CONTENT/judgments.json <manifest> ...`. It says which verdicts the change breaks. [docs/SPEC.md](docs/SPEC.md#judgments) has the file's format.
+Before changing a threshold in `detail.py` or `qc.py`, score it against the recorded verdicts with `~/.local/share/bagwork/sam/venv/bin/python judge.py $BAGWORK_CONTENT/judgments.json <manifest> ...`. It says which verdicts the change breaks. [docs/SPEC.md](docs/SPEC.md#judgments) has the file's format.
 
 ## The render contract
 

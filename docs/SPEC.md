@@ -185,7 +185,7 @@ Each points the review at a frame to look at with `crops --detail` and maybe fix
 
 A verdict that rests on `"auto"` is right when `"auto"` picks the matte exactly when it won. `"auto"` picks only the matte or the detail pass, so a verdict that SAM won is right under it when it avoids the matte. One that rests on `"matte qc"` is right when neither matte flag fires exactly when it won. `den-block` rests on neither, because no measure sees why its matte lost.
 
-**Run.** `.venv/bin/python judge.py <judgments.json> <manifest> [...] [--clips DIR]`. It reads each judged clip's mystery player from the manifests, and his masks and matte from `masks.npz` and `matte.npz`, over the frames the matte covers. It writes nothing. It prints:
+**Run.** `~/.local/share/bagwork/sam/venv/bin/python judge.py <judgments.json> <manifest> [...] [--clips DIR]`. It reads each judged clip's mystery player from the manifests, and his masks and matte from `masks.npz` and `matte.npz`, over the frames the matte covers. It writes nothing. It prints:
 
 - per verdict, his height share, the ghosting and fallback shares, and whether today's thresholds give it
 - per threshold, the values that give every verdict with the others at today's values, rounded inward to three decimals so every value shown passes
