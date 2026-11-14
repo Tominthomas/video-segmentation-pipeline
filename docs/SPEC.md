@@ -30,6 +30,18 @@ A clip with one mystery player draws his shape one of three ways, set by `"shape
 
 The hoop object's box covers the rim and the net, not the rim alone, so the net shows in the silhouette. Tomin wants the net to show.
 
+### Tracking speed
+
+SAM 2.1 small tracks one object at about 0.45 s a frame on an M4, and the GPU is the limit: device use sits at 99% while Python uses about 3% of a core. A benchmark on 2026-11-14 tracked one player through all 210 frames of `nembhard-2025-den-handles`, alternating five runs of each small variant.
+
+| Variant | Total time, median and range | Masks against today's |
+|---|---|---|
+| Today, `offload_state_to_cpu=True` | 98.4 s, 97.3 to 100.6 | |
+| State kept on the GPU | 98.3 s, 95.2 to 100.1 | identical |
+| SAM 2.1 tiny, 3 runs | 90.7 s, 90.2 to 92.8 | median IoU 0.93, 10th percentile 0.85 |
+
+Keeping SAM's state on the GPU changes nothing, because Apple's memory is shared by the CPU and GPU. Tiny saves 8% but moves his edge enough that one frame in ten agrees with small's below 0.85, so tracking stays on small with the offload as it is. Two SAM jobs at once would only split the GPU between them, which is why the SAM slot runs one at a time.
+
 ### Matting
 
 SAM's masks are 720p and blocky at a player's edge, so hands and the ball handler's shape blur together. A matte of the mystery player alone, made from the full-resolution source, gives his edge. Only he is matted. Matting every player costs a model run each and draws the eye away from him.
