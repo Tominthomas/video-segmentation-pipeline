@@ -1,6 +1,6 @@
 """Segment the mystery player with his own SAM 2.1 pass on a crop that follows him in the full-resolution source.
 
-Run by clips.py with the project venv:  .venv/bin/python pipeline/detail.py <source.mp4> <detail.json> <detail.npz>
+Run by clips.py with the project venv:  .venv/bin/python detail.py <source.mp4> <detail.json> <detail.npz>
 detail.json is {"clip", "masks", "mystery", "frames", "refines"}: clip.mp4, masks.npz, the mystery player's object
 index, the render's [first, end) frames or null for all, and his detail refines [{"frame", "points", "avoid",
 "box"?}] in clip pixels. With --choose first it reads masks.npz in place of the source, takes {"mystery", "frames"},
@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
-from matte import crop_origins, crop_size, frame_map, iou, read_crops, resize, seeds, thumbnails, video_info
 from PIL import Image
+
+from matte import crop_origins, crop_size, frame_map, iou, read_crops, resize, seeds, thumbnails, video_info
 from silhouette import dilate, erode, load, others_of, runs, shapes
 
 FPS = 30
@@ -300,6 +301,7 @@ def run_model(crops: np.ndarray, prompted: dict[int, dict]) -> np.ndarray:
     "avoid"}} in crop pixels, tracked forward from the first prompted crop and back from it."""
     import torch  # noqa: PLC0415 torch and SAM load only for the model run, so tests and renders skip them
     from sam2.sam2_video_predictor import SAM2VideoPredictor  # noqa: PLC0415
+
     from track import MODEL  # noqa: PLC0415
 
     device = os.environ.get("SAM_DEVICE", "mps" if torch.backends.mps.is_available() else "cpu")

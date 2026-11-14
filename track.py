@@ -1,6 +1,6 @@
 """Track prompted players, the ball and the hoop through a clip with SAM 2.1 and save their masks.
 
-Run by clips.py with the project venv:  .venv/bin/python pipeline/track.py <clip.mp4> <track.json> <masks.npz>
+Run by clips.py with the project venv:  .venv/bin/python track.py <clip.mp4> <track.json> <masks.npz>
 With --preview first, it only adds the prompts and writes one overlay PNG per prompted frame into the
 directory given in place of masks.npz, which takes seconds instead of a full track.
 track.json lists objects as {"kind", "prompts", "cache"}. Each prompt is {"frame", "points", "avoid"} and may
@@ -25,6 +25,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 from sam2.sam2_video_predictor import SAM2VideoPredictor
+
 from silhouette import TINTS, load
 
 MODEL = "facebook/sam2.1-hiera-small"

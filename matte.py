@@ -1,6 +1,6 @@
 """Matte the mystery player with MatAnyone 2 on a crop that follows his SAM box in the full-resolution source.
 
-Run by clips.py with the matte venv:  <venv>/bin/python pipeline/matte.py <source.mp4> <matte.json> <matte.npz>
+Run by clips.py with the matte venv:  <venv>/bin/python matte.py <source.mp4> <matte.json> <matte.npz>
 matte.json is {"clip", "masks", "mystery", "frames", "weights"}: clip.mp4, masks.npz, the mystery player's object
 index, the render's [first, end) frames or null for all, and the MatAnyone 2 weights. docs/SPEC.md#matting has the
 matte.npz layout and why each step is here. silhouette.py and qc.py import Matte and its helpers, so everything
@@ -18,6 +18,7 @@ from typing import NamedTuple
 
 import numpy as np
 from PIL import Image, ImageFilter
+
 from silhouette import dilate, erode, load, runs, shapes, smooth
 
 FPS = 30

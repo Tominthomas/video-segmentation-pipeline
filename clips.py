@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Fetch NBA highlight clips and render Bagwork's filtered variants.
 
-  python3 pipeline/clips.py scout <url>                         frames every second, to pick start/end
-  python3 pipeline/clips.py add [--manifest FILE] <url> --player NAME [--id ID]   scout, then add a manifest stub
-  python3 pipeline/clips.py build [--manifest FILE] [id ...]    fetch, normalize, filter, verify
-  python3 pipeline/clips.py preview [--manifest FILE] id        each prompt's mask, before a full track
-  python3 pipeline/clips.py propose [--manifest FILE] id --frame N   numbered player and ball boxes to prompt by
-  python3 pipeline/clips.py review [--manifest FILE] id         build, then a local review.html with overlay and QC
-  python3 pipeline/clips.py crops [--manifest FILE] id --frames 140-160:4,171 --box x0,y0,x1,y1
+  python3 clips.py scout <url>                         frames every second, to pick start/end
+  python3 clips.py add [--manifest FILE] <url> --player NAME [--id ID]   scout, then add a manifest stub
+  python3 clips.py build [--manifest FILE] [id ...]    fetch, normalize, filter, verify
+  python3 clips.py preview [--manifest FILE] id        each prompt's mask, before a full track
+  python3 clips.py propose [--manifest FILE] id --frame N   numbered player and ball boxes to prompt by
+  python3 clips.py review [--manifest FILE] id         build, then a local review.html with overlay and QC
+  python3 clips.py crops [--manifest FILE] id --frames 140-160:4,171 --box x0,y0,x1,y1
                                                                 gridded zooms of a region, to read ball_keys off
-  python3 pipeline/clips.py crops [--manifest FILE] id --frames 40-70:3 --detail
+  python3 clips.py crops [--manifest FILE] id --frames 40-70:3 --detail
                                                                 the detail pass's crops, to read detail refines off
 
 The manifest defaults to fixtures/clips.json, the public sample clips. Real puzzles keep theirs outside the repo.
@@ -35,7 +35,7 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent
 SAMPLE_MANIFEST = ROOT / "fixtures" / "clips.json"
 MEDIA = ROOT / "media"
 
@@ -64,14 +64,14 @@ ENCODE = [
 # Each clue variant hides faces and jersey text with one whole-frame look.
 # The blur runs before recoloring so small digits smear instead of turning into crisp edges.
 VENV_PYTHON = ROOT / ".venv" / "bin" / "python"
-TRACK = ROOT / "pipeline" / "track.py"
-SILHOUETTE = ROOT / "pipeline" / "silhouette.py"
-QC = ROOT / "pipeline" / "qc.py"
-PROPOSE = ROOT / "pipeline" / "propose.py"
-REVIEW = ROOT / "pipeline" / "review.py"
-CROPS = ROOT / "pipeline" / "crops.py"
-MATTE = ROOT / "pipeline" / "matte.py"
-DETAIL = ROOT / "pipeline" / "detail.py"
+TRACK = ROOT / "track.py"
+SILHOUETTE = ROOT / "silhouette.py"
+QC = ROOT / "qc.py"
+PROPOSE = ROOT / "propose.py"
+REVIEW = ROOT / "review.py"
+CROPS = ROOT / "crops.py"
+MATTE = ROOT / "matte.py"
+DETAIL = ROOT / "detail.py"
 # MatAnyone 2 lives outside the checkout, in its own venv, so every worktree shares one install (docs/SPEC.md#matting).
 MATTE_HOME = Path.home() / ".local" / "share" / "bagwork" / "matte"
 MATTE_PYTHON = MATTE_HOME / "venv" / "bin" / "python"

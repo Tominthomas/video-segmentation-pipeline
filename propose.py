@@ -1,6 +1,6 @@
 """Detect people and the ball on one frame and number them, so prompts can be picked by box number.
 
-Run by clips.py with the project venv:  .venv/bin/python pipeline/propose.py <clip.mp4> <spec.json> <out_dir>
+Run by clips.py with the project venv:  .venv/bin/python propose.py <clip.mp4> <spec.json> <out_dir>
 spec.json is {"frame"}. It writes <frame>.png, the frame with every box drawn and numbered, and <frame>.json,
 [{"n", "kind", "box": [x0, y0, x1, y1], "score", "crowd"}]. Players come first, left to right, then balls, then
 the people the crowd filter dropped, drawn dim. Each box drops straight into a manifest object as "box".

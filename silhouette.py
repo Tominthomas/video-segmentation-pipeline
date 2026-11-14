@@ -1,6 +1,6 @@
 """Render cached masks as silhouette frames: players white, ball orange, hoop gray, on black.
 
-Run by clips.py with the project venv:  .venv/bin/python pipeline/silhouette.py <masks.npz> <render.json> <out_dir>
+Run by clips.py with the project venv:  .venv/bin/python silhouette.py <masks.npz> <render.json> <out_dir>
 render.json picks the crop. "follow" is "action" (every player and the hoop), "ball", "holder"
 (the player who has the ball; from the release on it widens to keep the shooter, ball and hoop in frame),
 or "full" (the whole frame, pillarboxed in black to 16:9, for portrait sources that no 16:9 crop can hold).

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "pipeline"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from matte import Matte, crop_size, flashes, frame_map, levels, seeds  # noqa: E402
 from qc import ghosting, matte_flags  # noqa: E402

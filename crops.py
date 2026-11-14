@@ -1,7 +1,7 @@
 """Write one sheet of zoomed crops of a region at chosen frames, gridded in clip pixels, to place ball keys or
 detail refines by.
 
-Run by clips.py with the project venv:  .venv/bin/python pipeline/crops.py <clip.mp4> <crops.json> <sheet.png>
+Run by clips.py with the project venv:  .venv/bin/python crops.py <clip.mp4> <crops.json> <sheet.png>
 crops.json is {"frames", "box": [x0, y0, x1, y1], "ball_keys", "masks", "detail"}. Each tile is the box at one
 frame, scaled up, with grid lines labeled in clip.mp4 pixels, so a ball read off the grid is a "ball_keys" entry as
 is. When "masks" names the clip's masks.npz, the tracked ball there, after ball_keys, is ringed in the review page's
@@ -18,8 +18,9 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from detail import Detail, scale, to_crop
 from PIL import Image, ImageDraw, ImageFont
+
+from detail import Detail, scale, to_crop
 from review import HIDDEN_COLOR, SOURCE_COLORS, video_size
 from silhouette import ball_track, dilate, erode, load, others_of
 
