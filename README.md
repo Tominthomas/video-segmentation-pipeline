@@ -38,7 +38,7 @@ SAM2_BUILD_CUDA=0 $S/venv/bin/pip install --no-deps -r sam-requirements.txt
 
 `--no-deps` holds every package to the version `sam-requirements.txt` pins, SAM 2 included. Before each step that uses the venv, `clips.py` checks it against the pins and stops with the first package that differs. Masks are cached by `TRACK_VERSION`, not by these versions, so a pin change also bumps `TRACK_VERSION` in `clips.py`, and `tests/test_clips.py` fails until it does.
 
-`track.py` runs SAM 2.1 and caches the masks in `masks.npz`, about 0.3 seconds per object per frame on an M4 (`SAM_DEVICE=cpu` overrides the Apple GPU). `silhouette.py` draws them in seconds, so changing the look never re-runs tracking. Objects can also list `avoid` points SAM should leave out, such as a backboard behind the rim.
+`track.py` runs SAM 2.1 large and caches the masks in `masks.npz`, about 0.5 seconds per object per frame on an M4 (`SAM_DEVICE=cpu` overrides the Apple GPU). `silhouette.py` draws them in seconds, so changing the look never re-runs tracking. Objects can also list `avoid` points SAM should leave out, such as a backboard behind the rim.
 
 A `refine` on an object pulls its mask back after it drifts, and changes its cache key, so `build` tracks it again over the whole clip. To check a refine first, `python3 clips.py window [--manifest FILE] id --frames 150-180:3 --objects 11` tracks only the listed objects over the frames from the first to the last given and writes `window.png` in the clip's folder: each listed frame with the masks tinted and the prompts drawn. It writes no masks, so `masks.npz` and the object caches stay as they were. See [docs/SPEC.md](docs/SPEC.md#window) for how close its masks come to a full track's.
 

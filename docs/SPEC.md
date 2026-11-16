@@ -10,9 +10,9 @@ This spec says how the repo turns a clip manifest into the silhouette renders th
 |---|---|---|
 | `source.mp4` | yt-dlp | the url and the fetch window |
 | `clip.mp4` | ffmpeg | `source.mp4` at 720p and 30 fps |
-| `masks.npz` | `track.py`, SAM 2.1 small, under the SAM slot | `clip.mp4` and each object's prompts |
+| `masks.npz` | `track.py`, SAM 2.1 large, under the SAM slot | `clip.mp4` and each object's prompts |
 | `matte.npz` | `matte.py`, MatAnyone 2, under the SAM slot | `source.mp4` and the mystery player's masks |
-| `detail.npz` | `detail.py`, SAM 2.1 small, under the SAM slot | `source.mp4`, the players' masks and his detail refines |
+| `detail.npz` | `detail.py`, SAM 2.1 large, under the SAM slot | `source.mp4`, the players' masks and his detail refines |
 | `qc.json` | `qc.py` | `masks.npz` and `matte.npz` or `detail.npz` |
 | `silhouette.mp4` | `silhouette.py`, then ffmpeg | `masks.npz`, `matte.npz` or `detail.npz`, and the render spec |
 
@@ -36,7 +36,21 @@ A clip with one mystery player draws his shape one of three ways, set by `"shape
 
 The hoop object's box covers the rim and the net, not the rim alone, so the net shows in the silhouette. Tomin wants the net to show.
 
+### Tracking model
+
+Tracking and the detail pass use SAM 2.1 large. A comparison on 2026-11-15 built four clips of one player, 123 to 226 frames and 9 or 10 objects each, with small, large and SAM 3.1 from the same prompts, and read the raw masks and the finals frame by frame.
+
+| Model | Tracking time against small | Peak memory | What the frames showed |
+|---|---|---|---|
+| SAM 2.1 small | 1 | 8.1 GB | on one clip the ball object sat on a defender's forearm from before the shot through the flight |
+| SAM 2.1 large | 1.28 to 1.63 | 7.8 to 10.0 GB | followed the real ball there, and kept a shin and a planted toe that small dropped |
+| SAM 3.1, tracker only, one object at a time | 7.3 to 8.4 | 8.5 to 9.8 GB | lost the mystery player for 12 frames on one clip and bled another player's mask onto him on another |
+
+His shape differs little between small and large: their masks agree at a median IoU of 0.90 to 0.99 per clip. The ball is where large earns its time. No model drew the frame after a camera flash right, and on the clips drawn by the matte the matte's seed frames changed the final more than the model did. SAM 3.1 ran through a port of its tracker to the Apple GPU. Prompting its objects as one group drew players 35 to 58% too small, so each object ran alone, which is most of its time.
+
 ### Tracking speed
+
+The numbers in this section and under [Window](#window) were measured with SAM 2.1 small, the model then. Large takes 1.28 to 1.63 times as long.
 
 SAM 2.1 small tracks one object at about 0.45 s a frame on an M4, and the GPU is the limit: device use sits at 99% while Python uses about 3% of a core. A benchmark on 2026-11-14 tracked one player through all 210 frames of `nembhard-2025-den-handles`, alternating five runs of each small variant.
 
@@ -46,7 +60,7 @@ SAM 2.1 small tracks one object at about 0.45 s a frame on an M4, and the GPU is
 | State kept on the GPU | 98.3 s, 95.2 to 100.1 | identical |
 | SAM 2.1 tiny, 3 runs | 90.7 s, 90.2 to 92.8 | median IoU 0.93, 10th percentile 0.85 |
 
-Keeping SAM's state on the GPU changes nothing, because Apple's memory is shared by the CPU and GPU. Tiny saves 8% but moves his edge enough that one frame in ten agrees with small's below 0.85, so tracking stays on small with the offload as it is. Two SAM jobs at once would only split the GPU between them, which is why the SAM slot runs one at a time.
+Keeping SAM's state on the GPU changes nothing, because Apple's memory is shared by the CPU and GPU. Tiny saves 8% but moves his edge enough that one frame in ten agrees with small's below 0.85, so tiny was ruled out and the offload stays as it is. Two SAM jobs at once would only split the GPU between them, which is why the SAM slot runs one at a time.
 
 A second benchmark the same day asked whether another number format or Apple's MLX runtime is faster. It used the same clip and player, with five alternating runs of each variant. Today's tracking runs in bfloat16 on PyTorch's Apple GPU backend.
 
@@ -164,7 +178,7 @@ Prototyping on Nembhard's clips settled four things. SAM's video mode over the c
 
 - **Frame map and crop.** The matte's: the source frame that best matches each clip frame, and a square that follows his smoothed box, 1.5 times the 95th percentile of its longer side, or the whole frame when that doesn't fit. SAM sees each crop at its source size and scales it to 1024 itself.
 - **Prompts.** Each seed frame, picked by the matte's seed rule, gets his box from `masks.npz` padded by 4% of his height, one keep point deep inside each third of his mask from top to bottom, and one avoid point deep inside each other player's mask in the crop. Every prompt maps clip pixels to crop pixels through the crop's origin and the source's scale.
-- **Model.** SAM 2.1 small in video mode over the crop sequence, forward from the first prompted frame and back from it, under the SAM slot with the same `BAGWORK_MIN_FREE` gate. Its state stays on the GPU: offloaded, SAM copies each mask to the CPU without waiting, and the masks propagation yields read as empty. On Nembhard's wide clips, with crops of 432 to 528 pixels, it runs about 0.5 s a frame and the build peaks at 5.6 to 6.9 GB resident.
+- **Model.** SAM 2.1 large, the tracker's model, in video mode over the crop sequence, forward from the first prompted frame and back from it, under the SAM slot with the same `BAGWORK_MIN_FREE` gate. Its state stays on the GPU: offloaded, SAM copies each mask to the CPU without waiting, and the masks propagation yields read as empty. On Nembhard's wide clips, with crops of 432 to 528 pixels, small ran about 0.5 s a frame and the build peaked at 5.6 to 6.9 GB resident. Large's detail passes peaked at 7.0 to 7.6 GB in the model comparison.
 - **Fallback.** At render time, a frame where his mask in `masks.npz` is empty, or where his owned mask scaled to the clip overlaps it with an IoU under 0.3, draws his mask from `masks.npz`. The bar is low because the 720p mask is the coarse one. On `den-handles` the two agree at a median IoU of 0.9 and a 10th percentile of 0.8 when the detail pass is right.
 
 **Ownership.** His mask in `masks.npz` decides who is who, and `prob` decides his edge. Per crop pixel, with `p` its probability:

@@ -31,7 +31,8 @@ from sam2.sam2_video_predictor import SAM2VideoPredictor
 
 from silhouette import TINTS, load
 
-MODEL = "facebook/sam2.1-hiera-small"
+# Large over small: docs/SPEC.md#tracking-model. detail.py tracks with the same model.
+MODEL = "facebook/sam2.1-hiera-large"
 # A refine with more than this share of its keep points, or of the mask it makes, on another object's mask is
 # probably filed under the wrong object.
 MISFILED = 0.5
