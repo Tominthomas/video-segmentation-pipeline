@@ -60,7 +60,7 @@ SAM 2.1 small tracks one object at about 0.45 s a frame on an M4, and the GPU is
 | State kept on the GPU | 98.3 s, 95.2 to 100.1 | identical |
 | SAM 2.1 tiny, 3 runs | 90.7 s, 90.2 to 92.8 | median IoU 0.93, 10th percentile 0.85 |
 
-Keeping SAM's state on the GPU changes nothing, because Apple's memory is shared by the CPU and GPU. Tiny saves 8% but moves his edge enough that one frame in ten agrees with small's below 0.85, so tracking stays on small with the offload as it is. Two SAM jobs at once would only split the GPU between them, which is why the SAM slot runs one at a time.
+Keeping SAM's state on the GPU changes nothing, because Apple's memory is shared by the CPU and GPU. Tiny saves 8% but moves his edge enough that one frame in ten agrees with small's below 0.85, so tiny was ruled out and the offload stays as it is. Two SAM jobs at once would only split the GPU between them, which is why the SAM slot runs one at a time.
 
 A second benchmark the same day asked whether another number format or Apple's MLX runtime is faster. It used the same clip and player, with five alternating runs of each variant. Today's tracking runs in bfloat16 on PyTorch's Apple GPU backend.
 
