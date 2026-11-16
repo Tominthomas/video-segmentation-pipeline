@@ -17,7 +17,11 @@ from clips import SAM_PINS, TRACK_VERSION, sam_missing  # noqa: E402
 
 # New pins can change the masks track.py writes, and old masks stay cached under the same TRACK_VERSION, so changing
 # the pins means bumping TRACK_VERSION and adding a row here.
-PIN_SHA256_BY_TRACK_VERSION = {1: "a52d461a7021fea93dbde7e22d31c662f6453fffa79f6475b957b3966478861a"}
+# Version 2 changed the SAM model from small to large under the same pins.
+PIN_SHA256_BY_TRACK_VERSION = {
+    1: "a52d461a7021fea93dbde7e22d31c662f6453fffa79f6475b957b3966478861a",
+    2: "a52d461a7021fea93dbde7e22d31c662f6453fffa79f6475b957b3966478861a",
+}
 
 
 def fake_venv(root: Path, pins: list[str], python: str = "3.14") -> Path:

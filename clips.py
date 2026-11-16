@@ -92,8 +92,8 @@ MATTE_WEIGHTS = MATTE_HOME / "matanyone2.pth"
 MATTE_WEIGHTS_SHA256 = "5e9821e4087231427376b437c85bb6e072b41e582314f06fd524f75bc4af5914"
 TRACK_KEYS = ("frame", "objects")
 # Part of every tracked object's cache key. Bump it when a track.py or sam-requirements.txt change alters the masks it
-# writes. tests/test_clips.py fails when the pins change and it does not.
-TRACK_VERSION = 1
+# writes, a change of SAM model included. tests/test_clips.py fails when the pins change and it does not.
+TRACK_VERSION = 2
 # How the mystery player's shape is drawn (docs/SPEC.md#python-clip-pipeline). "auto" picks "detail" or "matte" by
 # his size.
 SHAPES = ("auto", "detail", "matte", "sam")
