@@ -362,53 +362,6 @@ def sam_slot(clip: Clip, command: str, log: Path | None = None):
         yield lock.fileno()
 
 
-def track_masks(clip: Clip, art: Artifacts, video: Path, objects: list[dict], out: Path) -> None:
-    """Run track.py under the SAM slot when an object needs tracking, and record what the run cost in build.json."""
-    # Fail before queueing for the slot; venv_step checks again once the slot is held.
-    sam_python(clip)
-    missing = sum(not Path(obj["cache"]).exists() for obj in objects)
-    log = art.folder / "track.log"
-    # A fresh log per masks build, so the last run's progress never reads as this one's.
-    if not missing:
-        log.write_text(f"{time.strftime('%X')} all {len(objects)} objects cached, nothing to track\n")
-        venv_step(clip, TRACK, video, {"objects": objects}, out)
-        return
-    log.write_text(f"{time.strftime('%X')} queued, waiting for the SAM slot\n")
-    print(f"  tracking {missing} of {len(objects)} objects, progress in {log}", flush=True)
-    with sam_slot(clip, "build", log) as slot:
-        with log.open("a") as f:
-            f.write(f"{time.strftime('%X')} slot acquired, loading SAM for {missing} of {len(objects)} objects\n")
-        started = time.monotonic()
-        venv_step(clip, TRACK, video, {"objects": objects}, out, log, slot=slot)
-    seconds = round(time.monotonic() - started, 1)
-    with log.open("a") as f:
-        f.write(f"{time.strftime('%X')} finished tracking in {seconds}s\n")
-    frames = int(next(s for s in probe(video)["streams"] if s["codec_type"] == "video")["nb_frames"])
-    art.ledger["track"] = {"seconds": seconds, "frames": frames, "objects": missing}
-
-
-def track_objects(spec: dict, folder: Path, clip_recipe_hash: str) -> list[dict]:
-    """Each object's kind, its prompts in order, and the cache file named by everything that shapes its masks."""
-    objects = []
-    for i, obj in enumerate(spec["objects"]):
-        # A box joins the prompt only when given, so objects prompted by points alone keep their cache keys.
-        first = {
-            "frame": obj.get("frame", spec["frame"]),
-            "points": obj.get("points", []),
-            "avoid": obj.get("avoid", []),
-        }
-        if "box" in obj:
-            first["box"] = obj["box"]
-        prompts = [first, *({"points": [], "avoid": [], **refine} for refine in obj.get("refine", []))]
-        if not all(p["points"] or "box" in p for p in prompts):
-            sys.exit(f"object {i}: every prompt needs points or a box")
-        key = hashlib.sha256(
-            json.dumps([TRACK_VERSION, clip_recipe_hash, prompts], sort_keys=True).encode()
-        ).hexdigest()
-        objects.append({"kind": obj["kind"], "prompts": prompts, "cache": str(folder / "objects" / f"{key[:16]}.npz")})
-    return objects
-
-
 def sam_python(clip: Clip) -> Path:
     """The SAM venv's python, exiting when the venv differs from sam-requirements.txt."""
     if reason := sam_missing(SAM_VENV):
@@ -443,6 +396,53 @@ def sam_missing(venv: Path) -> str | None:
             found = f"has {name}{have}" if have else f"has no {name}"
             return f"{venv} {found}, but sam-requirements.txt pins {name}{wanted}"
     return None
+
+
+def track_objects(spec: dict, folder: Path, clip_recipe_hash: str) -> list[dict]:
+    """Each object's kind, its prompts in order, and the cache file named by everything that shapes its masks."""
+    objects = []
+    for i, obj in enumerate(spec["objects"]):
+        # A box joins the prompt only when given, so objects prompted by points alone keep their cache keys.
+        first = {
+            "frame": obj.get("frame", spec["frame"]),
+            "points": obj.get("points", []),
+            "avoid": obj.get("avoid", []),
+        }
+        if "box" in obj:
+            first["box"] = obj["box"]
+        prompts = [first, *({"points": [], "avoid": [], **refine} for refine in obj.get("refine", []))]
+        if not all(p["points"] or "box" in p for p in prompts):
+            sys.exit(f"object {i}: every prompt needs points or a box")
+        key = hashlib.sha256(
+            json.dumps([TRACK_VERSION, clip_recipe_hash, prompts], sort_keys=True).encode()
+        ).hexdigest()
+        objects.append({"kind": obj["kind"], "prompts": prompts, "cache": str(folder / "objects" / f"{key[:16]}.npz")})
+    return objects
+
+
+def track_masks(clip: Clip, art: Artifacts, video: Path, objects: list[dict], out: Path) -> None:
+    """Run track.py under the SAM slot when an object needs tracking, and record what the run cost in build.json."""
+    # Fail before queueing for the slot; venv_step checks again once the slot is held.
+    sam_python(clip)
+    missing = sum(not Path(obj["cache"]).exists() for obj in objects)
+    log = art.folder / "track.log"
+    # A fresh log per masks build, so the last run's progress never reads as this one's.
+    if not missing:
+        log.write_text(f"{time.strftime('%X')} all {len(objects)} objects cached, nothing to track\n")
+        venv_step(clip, TRACK, video, {"objects": objects}, out)
+        return
+    log.write_text(f"{time.strftime('%X')} queued, waiting for the SAM slot\n")
+    print(f"  tracking {missing} of {len(objects)} objects, progress in {log}", flush=True)
+    with sam_slot(clip, "build", log) as slot:
+        with log.open("a") as f:
+            f.write(f"{time.strftime('%X')} slot acquired, loading SAM for {missing} of {len(objects)} objects\n")
+        started = time.monotonic()
+        venv_step(clip, TRACK, video, {"objects": objects}, out, log, slot=slot)
+    seconds = round(time.monotonic() - started, 1)
+    with log.open("a") as f:
+        f.write(f"{time.strftime('%X')} finished tracking in {seconds}s\n")
+    frames = int(next(s for s in probe(video)["streams"] if s["codec_type"] == "video")["nb_frames"])
+    art.ledger["track"] = {"seconds": seconds, "frames": frames, "objects": missing}
 
 
 # Keys in definitions() for a module's statements other than its definitions, and for all of its statements.
@@ -686,6 +686,26 @@ def shape_inputs(art: Artifacts, shape_path: str | None) -> list:
     return [art.ledger[Path(shape_path).name], MATTE.read_text(), DETAIL.read_text()] if shape_path else []
 
 
+def window_seconds(clip: Clip, source: Path) -> float:
+    """Length of the fetched window, which every variant except a trimmed silhouette matches."""
+    if clip.start is not None and clip.end is not None:
+        return clip.end - clip.start
+    return float(probe(source)["format"]["duration"])
+
+
+def render_spec(clip: Clip, spec: dict, seconds: float) -> dict:
+    """What silhouette.py renders: the track spec without its prompts, the mystery players, and any trim as frames."""
+    render = {k: v for k, v in spec.items() if k not in TRACK_KEYS}
+    render["mystery"] = [i for i, obj in enumerate(spec["objects"]) if obj.get("mystery")]
+    # Trim cuts only the render, so tightening it never re-fetches, re-tracks or shifts prompt frames.
+    if "trim" in render:
+        t0, t1 = render.pop("trim")
+        if not 0 <= t0 < t1 <= seconds:
+            sys.exit(f"{clip.id}: trim must be [t0, t1] within the {seconds:.2f}s fetch window")
+        render["frames"] = [round(t0 * FPS), round(t1 * FPS)]
+    return render
+
+
 def silhouette(clip: Clip, masks: Path, render: dict, out: Path) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         frames = Path(tmp) / "frames"
@@ -795,118 +815,6 @@ def normalized(clip: Clip) -> tuple[Artifacts, Path, Path]:
     return art, source, video
 
 
-def preview(clip: Clip) -> None:
-    """Write each prompted frame with its masks to the clip's preview/ folder, without tracking."""
-    if not clip.track:
-        sys.exit(f"{clip.id} has no track prompts to preview")
-    art, _, video = normalized(clip)
-    objects = track_objects(clip.track, art.folder, art.ledger["clip.mp4"])
-    out = art.folder / "preview"
-    shutil.rmtree(out, ignore_errors=True)
-    with sam_slot(clip, "preview") as slot:
-        venv_step(clip, TRACK, video, {"objects": objects}, out, flags=("--preview",), slot=slot)
-
-
-def window(clip: Clip, frames: list[int], chosen: list[int]) -> None:
-    """Track the chosen objects over the span of the frames and write window.png in the clip's folder, a sheet of the
-    frames, so a refine is checked in seconds instead of a full track. It writes no masks, so masks.npz and the object
-    caches stay as they were."""
-    if not clip.track:
-        sys.exit(f"{clip.id} has no track prompts to window")
-    art, _, video = normalized(clip)
-    objects = track_objects(clip.track, art.folder, art.ledger["clip.mp4"])
-    if unknown := [i for i in chosen if not 0 <= i < len(objects)]:
-        sys.exit(f"{clip.id} has objects 0 to {len(objects) - 1}, not {', '.join(map(str, unknown))}")
-    spec = {"objects": objects, "window": {"objects": sorted(set(chosen)), "frames": frames}}
-    with sam_slot(clip, "window") as slot:
-        venv_step(clip, TRACK, video, spec, art.folder / "window.png", flags=("--window",), slot=slot)
-
-
-def window_seconds(clip: Clip, source: Path) -> float:
-    """Length of the fetched window, which every variant except a trimmed silhouette matches."""
-    if clip.start is not None and clip.end is not None:
-        return clip.end - clip.start
-    return float(probe(source)["format"]["duration"])
-
-
-def render_spec(clip: Clip, spec: dict, seconds: float) -> dict:
-    """What silhouette.py renders: the track spec without its prompts, the mystery players, and any trim as frames."""
-    render = {k: v for k, v in spec.items() if k not in TRACK_KEYS}
-    render["mystery"] = [i for i, obj in enumerate(spec["objects"]) if obj.get("mystery")]
-    # Trim cuts only the render, so tightening it never re-fetches, re-tracks or shifts prompt frames.
-    if "trim" in render:
-        t0, t1 = render.pop("trim")
-        if not 0 <= t0 < t1 <= seconds:
-            sys.exit(f"{clip.id}: trim must be [t0, t1] within the {seconds:.2f}s fetch window")
-        render["frames"] = [round(t0 * FPS), round(t1 * FPS)]
-    return render
-
-
-def propose(clip: Clip, frame: int) -> None:
-    """Write a numbered sheet of the players and ball a detector finds on one frame, to the proposals/ folder."""
-    art, _, video = normalized(clip)
-    venv_step(clip, PROPOSE, video, {"frame": frame}, art.folder / "proposals")
-
-
-def frame_list(text: str) -> list[int]:
-    """Frames from a comma list of numbers and first-last[:step] ranges, such as "140-160:4,171"."""
-    frames = []
-    for part in text.split(","):
-        span, _, step = part.partition(":")
-        first, _, last = span.partition("-")
-        frames += range(int(first), int(last or first) + 1, int(step or 1))
-    return frames
-
-
-def crops(clip: Clip, frames: list[int], box: list[int] | None, detail: bool) -> None:
-    """Write crops.png in the clip's folder: the box at each frame, gridded in clip.mp4 pixels, for ball_keys.
-
-    The drawn ball from the last build's masks, after the manifest's ball_keys, is ringed where it would render.
-    Masks older than clip.mp4 were tracked on other footage, so they are left out. With detail, it writes
-    detail.png instead: each frame's crop from the detail pass, for detail refines (docs/SPEC.md#detail).
-    """
-    art, source, video = normalized(clip)
-    masks = art.folder / "masks.npz"
-    current = masks.exists() and masks.stat().st_mtime >= video.stat().st_mtime
-    if masks.exists() and not current:
-        print(f"  masks.npz predates clip.mp4, so no drawn ball; build {clip.id} to place it")
-    spec = clip.track or {}
-    keys = spec.get("ball_keys", [])
-    sheet = {"frames": frames, "box": box, "ball_keys": keys, "masks": str(masks) if current else None, "detail": None}
-    if detail:
-        found = art.folder / "detail.npz"
-        # The detail pass reads the players' masks only, so a re-tracked ball or hoop leaves it current.
-        players = [
-            Path(obj["cache"])
-            for obj in track_objects(spec, art.folder, art.ledger["clip.mp4"])
-            if obj["kind"] == "player"
-        ]
-        made = found.stat().st_mtime if found.exists() else 0
-        if not (current and made and all(p.exists() and made >= p.stat().st_mtime for p in players)):
-            sys.exit(f'{clip.id} has no detail pass over its current masks; build it with "shape": "detail"')
-        mystery = next(i for i, obj in enumerate(spec["objects"]) if obj.get("mystery"))
-        refines = spec["objects"][mystery].get("detail", [])
-        sheet["detail"] = {"path": str(found), "source": str(source), "mystery": mystery, "refines": refines}
-    elif box is None:
-        sys.exit("crops needs --box, or --detail for the detail pass's own crops")
-    venv_step(clip, CROPS, video, sheet, art.folder / ("detail.png" if detail else "crops.png"))
-
-
-def review(clip: Clip) -> None:
-    """Build the clip, then write review.html in its folder. The page shows source video, so it stays local."""
-    if not clip.track:
-        sys.exit(f"{clip.id} has no track to review")
-    if not build([clip]):
-        sys.exit(1)
-    art, source, video = normalized(clip)
-    spec = clip.track
-    render = render_spec(clip, spec, window_seconds(clip, source))
-    objects = track_objects(spec, art.folder, art.ledger["clip.mp4"])
-    render = prepare_shape(clip, art, source, render, objects)
-    flags = json.loads((art.folder / "qc.json").read_text())["flags"]
-    venv_step(clip, REVIEW, video, {"render": render, "flags": flags}, art.folder)
-
-
 def build(clips: list[Clip]) -> bool:
     ok = True
     for clip in clips:
@@ -1005,6 +913,88 @@ def approve(clips: list[Clip], approved: Path) -> bool:
     return ok
 
 
+def preview(clip: Clip) -> None:
+    """Write each prompted frame with its masks to the clip's preview/ folder, without tracking."""
+    if not clip.track:
+        sys.exit(f"{clip.id} has no track prompts to preview")
+    art, _, video = normalized(clip)
+    objects = track_objects(clip.track, art.folder, art.ledger["clip.mp4"])
+    out = art.folder / "preview"
+    shutil.rmtree(out, ignore_errors=True)
+    with sam_slot(clip, "preview") as slot:
+        venv_step(clip, TRACK, video, {"objects": objects}, out, flags=("--preview",), slot=slot)
+
+
+def propose(clip: Clip, frame: int) -> None:
+    """Write a numbered sheet of the players and ball a detector finds on one frame, to the proposals/ folder."""
+    art, _, video = normalized(clip)
+    venv_step(clip, PROPOSE, video, {"frame": frame}, art.folder / "proposals")
+
+
+def window(clip: Clip, frames: list[int], chosen: list[int]) -> None:
+    """Track the chosen objects over the span of the frames and write window.png in the clip's folder, a sheet of the
+    frames, so a refine is checked in seconds instead of a full track. It writes no masks, so masks.npz and the object
+    caches stay as they were."""
+    if not clip.track:
+        sys.exit(f"{clip.id} has no track prompts to window")
+    art, _, video = normalized(clip)
+    objects = track_objects(clip.track, art.folder, art.ledger["clip.mp4"])
+    if unknown := [i for i in chosen if not 0 <= i < len(objects)]:
+        sys.exit(f"{clip.id} has objects 0 to {len(objects) - 1}, not {', '.join(map(str, unknown))}")
+    spec = {"objects": objects, "window": {"objects": sorted(set(chosen)), "frames": frames}}
+    with sam_slot(clip, "window") as slot:
+        venv_step(clip, TRACK, video, spec, art.folder / "window.png", flags=("--window",), slot=slot)
+
+
+def crops(clip: Clip, frames: list[int], box: list[int] | None, detail: bool) -> None:
+    """Write crops.png in the clip's folder: the box at each frame, gridded in clip.mp4 pixels, for ball_keys.
+
+    The drawn ball from the last build's masks, after the manifest's ball_keys, is ringed where it would render.
+    Masks older than clip.mp4 were tracked on other footage, so they are left out. With detail, it writes
+    detail.png instead: each frame's crop from the detail pass, for detail refines (docs/SPEC.md#detail).
+    """
+    art, source, video = normalized(clip)
+    masks = art.folder / "masks.npz"
+    current = masks.exists() and masks.stat().st_mtime >= video.stat().st_mtime
+    if masks.exists() and not current:
+        print(f"  masks.npz predates clip.mp4, so no drawn ball; build {clip.id} to place it")
+    spec = clip.track or {}
+    keys = spec.get("ball_keys", [])
+    sheet = {"frames": frames, "box": box, "ball_keys": keys, "masks": str(masks) if current else None, "detail": None}
+    if detail:
+        found = art.folder / "detail.npz"
+        # The detail pass reads the players' masks only, so a re-tracked ball or hoop leaves it current.
+        players = [
+            Path(obj["cache"])
+            for obj in track_objects(spec, art.folder, art.ledger["clip.mp4"])
+            if obj["kind"] == "player"
+        ]
+        made = found.stat().st_mtime if found.exists() else 0
+        if not (current and made and all(p.exists() and made >= p.stat().st_mtime for p in players)):
+            sys.exit(f'{clip.id} has no detail pass over its current masks; build it with "shape": "detail"')
+        mystery = next(i for i, obj in enumerate(spec["objects"]) if obj.get("mystery"))
+        refines = spec["objects"][mystery].get("detail", [])
+        sheet["detail"] = {"path": str(found), "source": str(source), "mystery": mystery, "refines": refines}
+    elif box is None:
+        sys.exit("crops needs --box, or --detail for the detail pass's own crops")
+    venv_step(clip, CROPS, video, sheet, art.folder / ("detail.png" if detail else "crops.png"))
+
+
+def review(clip: Clip) -> None:
+    """Build the clip, then write review.html in its folder. The page shows source video, so it stays local."""
+    if not clip.track:
+        sys.exit(f"{clip.id} has no track to review")
+    if not build([clip]):
+        sys.exit(1)
+    art, source, video = normalized(clip)
+    spec = clip.track
+    render = render_spec(clip, spec, window_seconds(clip, source))
+    objects = track_objects(spec, art.folder, art.ledger["clip.mp4"])
+    render = prepare_shape(clip, art, source, render, objects)
+    flags = json.loads((art.folder / "qc.json").read_text())["flags"]
+    venv_step(clip, REVIEW, video, {"render": render, "flags": flags}, art.folder)
+
+
 def scout(url: str) -> Path:
     """Download a small copy of the post and write a sheet of one frame per second, returning the scout folder."""
     video_id = run(["yt-dlp", "--no-warnings", "--print", "id", url]).strip()
@@ -1095,6 +1085,16 @@ def add(manifest: Path, url: str, player: str, clip_id: str | None) -> None:
     tmp.write_text(json.dumps(entries, indent=2) + "\n")
     tmp.replace(manifest)
     print(f"added {clip_id} to {manifest}")
+
+
+def frame_list(text: str) -> list[int]:
+    """Frames from a comma list of numbers and first-last[:step] ranges, such as "140-160:4,171"."""
+    frames = []
+    for part in text.split(","):
+        span, _, step = part.partition(":")
+        first, _, last = span.partition("-")
+        frames += range(int(first), int(last or first) + 1, int(step or 1))
+    return frames
 
 
 def command_line() -> argparse.ArgumentParser:
