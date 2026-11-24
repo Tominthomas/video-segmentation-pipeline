@@ -8,6 +8,7 @@ outside run_model needs only numpy and Pillow.
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -309,7 +310,10 @@ def run_model(crops: np.ndarray, seed_masks: dict[int, np.ndarray], weights: Pat
     from matanyone2.inference.inference_core import InferenceCore  # noqa: PLC0415
     from matanyone2.utils.get_default_model import get_matanyone2_model  # noqa: PLC0415
 
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = torch.device(
+        os.environ.get("SAM_DEVICE")
+        or ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    )
     model = get_matanyone2_model(str(weights), device)
     alpha = np.zeros(crops.shape[:3], np.uint8)
 

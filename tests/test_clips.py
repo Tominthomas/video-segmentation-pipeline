@@ -197,3 +197,26 @@ class ShapeRecipes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Manifest(unittest.TestCase):
+    def load(self, entries: object) -> str:
+        """The error load_manifest exits with on entries, written as JSON or as raw text."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clips.json"
+            path.write_text(entries if isinstance(entries, str) else json.dumps(entries))
+            with self.assertRaises(SystemExit) as stop:
+                clips.load_manifest(path)
+            return str(stop.exception.code)
+
+    def entry(self, **fields: object) -> dict:
+        return {"id": "doe-drive", "player": "Jane Doe", "title": "Drive", "url": "https://x.com/a/status/1", **fields}
+
+    def test_bad_json_names_the_file(self):
+        self.assertIn("clips.json", self.load("[{"))
+
+    def test_an_id_that_leaves_its_folder_is_refused(self):
+        self.assertIn("may hold only", self.load([self.entry(id="../doe")]))
+
+    def test_a_track_with_no_objects_is_refused(self):
+        self.assertIn("at least one object", self.load([self.entry(track={"frame": 0, "objects": []})]))

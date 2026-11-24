@@ -69,8 +69,6 @@ ENCODE = [
     "-1",
 ]
 
-# Each clue variant hides faces and jersey text with one whole-frame look.
-# The blur runs before recoloring so small digits smear instead of turning into crisp edges.
 # SAM 2 and every pipeline script run in one venv outside the checkout, so every worktree shares one install.
 SAM_VENV = Path.home() / ".local" / "share" / "bagwork" / "sam" / "venv"
 SAM_PYTHON = SAM_VENV / "bin" / "python"
@@ -109,7 +107,10 @@ MIN_FREE = int(os.environ.get("BAGWORK_MIN_FREE", "30"))
 # link to a video file reports no height, so it falls through to the file itself.
 FETCH_FORMAT = "bv*[height<=1080]+ba/b[height<=1080]/b"
 SCENE_SCORE_CUT = 0.4
+TOOLS = ("ffmpeg", "ffprobe", "yt-dlp")
 
+# Each clue variant hides faces and jersey text with one whole-frame look.
+# The blur runs before recoloring so small digits smear instead of turning into crisp edges.
 FILTERS = {
     "thermal": "format=gray,gblur=sigma=4,format=yuv420p,pseudocolor=p=inferno",
 }
@@ -147,6 +148,10 @@ class Clip:
     track: str | None = None
 
 
+# An id names the clip's folder and its approved file, so it must be one plain path component.
+CLIP_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
 def parse_crop(raw: dict) -> Crop:
     path = tuple(sorted((float(t), int(x), int(y)) for t, x, y in raw["path"]))
     if not path:
@@ -157,7 +162,10 @@ def parse_crop(raw: dict) -> Crop:
 def load_manifest(path: Path) -> list[Clip]:
     if not path.is_file():
         sys.exit(f"no manifest at {path}")
-    raw = json.loads(path.read_text())
+    try:
+        raw = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        sys.exit(f"{path}: {e}")
     clips = []
     for i, entry in enumerate(raw):
         try:
@@ -170,6 +178,12 @@ def load_manifest(path: Path) -> list[Clip]:
             clip = Clip(**fields)
         except TypeError as e:
             sys.exit(f"{path.name} entry {i}: {e}")
+        if not CLIP_ID.fullmatch(clip.id):
+            sys.exit(
+                f"{path.name} entry {i}: id {clip.id!r} may hold only letters, digits, dots, hyphens and underscores"
+            )
+        if clip.track is not None and not json.loads(clip.track).get("objects"):
+            sys.exit(f"{clip.id}: track needs at least one object")
         if (clip.start is None) != (clip.end is None):
             sys.exit(f"{clip.id}: give both start and end, or neither for the whole video")
         if clip.start is not None and clip.end is not None and not 0 <= clip.start < clip.end:
@@ -181,20 +195,18 @@ def load_manifest(path: Path) -> list[Clip]:
     return clips
 
 
-def run(cmd: list[str]) -> None:
+def run(cmd: list[str]) -> str:
+    """Run a command and return its stdout, exiting with its stderr when it fails."""
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         sys.exit(f"command failed: {' '.join(cmd)}\n{result.stderr[-2000:]}")
+    return result.stdout
 
 
 def probe(path: Path) -> dict:
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-of", "json", "-show_format", "-show_streams", "-show_chapters", str(path)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    return json.loads(out)
+    return json.loads(
+        run(["ffprobe", "-v", "error", "-of", "json", "-show_format", "-show_streams", "-show_chapters", str(path)])
+    )
 
 
 class Artifacts:
@@ -274,8 +286,12 @@ def venv_step(
 
 
 def free_memory() -> int:
-    last = subprocess.run(["memory_pressure"], capture_output=True, text=True, check=True).stdout.splitlines()[-1]
-    return int(last.rsplit(" ", 1)[1].rstrip("%"))
+    """The percentage of memory free, from memory_pressure on macOS and /proc/meminfo on Linux."""
+    if sys.platform == "darwin":
+        last = run(["memory_pressure"]).splitlines()[-1]
+        return int(last.rsplit(" ", 1)[1].rstrip("%"))
+    info = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+    return int(100 * int(info["MemAvailable"].split()[0]) / int(info["MemTotal"].split()[0]))
 
 
 def track_progress(log: Path) -> str:
@@ -387,7 +403,7 @@ def track_objects(spec: dict, folder: Path, clip_hash: str) -> list[dict]:
 def sam_python(clip: Clip) -> Path:
     """The SAM venv's python, exiting when the venv differs from sam-requirements.txt."""
     if reason := sam_missing(SAM_VENV):
-        sys.exit(f"{clip.id}: {reason}. README.md#silhouettes installs it")
+        sys.exit(f"{clip.id}: {reason}. README.md#install-sam installs it")
     return SAM_PYTHON
 
 
@@ -691,7 +707,7 @@ def contact_sheet(variants: dict[Path, float], out: Path) -> None:
 
 
 # Bagwork's render contract, copied from MAX_CLIP_BYTES, RENDER_TAGS and renderProblem in tools/bagwork/library.ts in
-# the bagwork repo, which wins when the two disagree.
+# the private bagwork repo, which wins when the two disagree.
 MAX_RENDER_BYTES = 2_000_000
 RENDER_TAGS = {
     "major_brand": re.compile(r"[a-z0-9]{4}"),
@@ -973,9 +989,7 @@ def approve(clips: list[Clip], approved: Path) -> bool:
 
 def scout(url: str) -> Path:
     """Download a small copy of the post and write a sheet of one frame per second, returning the scout folder."""
-    video_id = subprocess.run(
-        ["yt-dlp", "--no-warnings", "--print", "id", url], capture_output=True, text=True, check=True
-    ).stdout.strip()
+    video_id = run(["yt-dlp", "--no-warnings", "--print", "id", url]).strip()
     folder = MEDIA / "scout" / video_id
     frames = folder / "frames"
     if frames.exists():
@@ -1045,15 +1059,10 @@ def add(manifest: Path, url: str, player: str, clip_id: str | None) -> None:
     The stub holds only id, player, title and url. Prompts, the window and the trim come after scouting.
     """
     entries = json.loads(manifest.read_text()) if manifest.exists() else []
-    info = json.loads(
-        subprocess.run(
-            ["yt-dlp", "--no-warnings", "--no-playlist", "-f", FETCH_FORMAT, "-j", url],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    )
+    info = json.loads(run(["yt-dlp", "--no-warnings", "--no-playlist", "-f", FETCH_FORMAT, "-j", url]))
     clip_id = clip_id or f"{player.rsplit(maxsplit=1)[-1].lower()}-{info['id']}"
+    if not CLIP_ID.fullmatch(clip_id):
+        sys.exit(f"id {clip_id!r} may hold only letters, digits, dots, hyphens and underscores; pass --id")
     if any(entry["id"] == clip_id for entry in entries):
         sys.exit(f"{manifest} already has {clip_id}; pass a different --id")
     video = scout(url) / "video.mp4"
@@ -1080,7 +1089,7 @@ def command_line() -> argparse.ArgumentParser:
         "--manifest",
         type=Path,
         required=True,
-        help="a real puzzle's manifest under $BAGWORK_CONTENT, or fixtures/clips.json for a public sample",
+        help="the manifest to append to; keep manifests for real puzzles outside the repo",
     )
     add_cmd.add_argument("url")
     add_cmd.add_argument("--player", required=True)
@@ -1115,6 +1124,8 @@ def main() -> None:
     args = command_line().parse_args()
     # The venv steps print straight to the terminal, so ours must flush per line to stay in order around them.
     sys.stdout.reconfigure(line_buffering=True)  # ty: ignore[missing-union-attribute] a TextIOWrapper at run time
+    if missing := [tool for tool in TOOLS if not shutil.which(tool)]:
+        sys.exit(f"{', '.join(missing)} not on PATH; brew install ffmpeg yt-dlp installs them")
 
     if args.command == "scout":
         scout(args.url)
