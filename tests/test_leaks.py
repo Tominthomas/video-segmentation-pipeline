@@ -20,7 +20,7 @@ class Leaks(unittest.TestCase):
         (content / "clips-doe.json").write_text(json.dumps([entry, junior]))
         (content / "judgments.json").write_text(json.dumps({"clips": {}}))
         (content / "approved").mkdir()
-        (content / "approved" / "kyrie-2017-okc-drive.mp4").touch()
+        (content / "approved" / "quill-2017-okc-drive.mp4").touch()
         self.found = pattern(secret_terms(content))
 
     def hits(self, text: str) -> list[str]:
@@ -31,7 +31,7 @@ class Leaks(unittest.TestCase):
         self.assertEqual(self.hits("Doe's close clip"), ["Doe"])
         self.assertEqual(self.hits("`doe-2026-den-drive`"), ["doe-2026-den-drive"])
         self.assertEqual(self.hits("`doe-2025-gsw-iso`"), ["doe-"])
-        self.assertEqual(self.hits("kyrie-2017-okc-drive.mp4"), ["kyrie-2017-okc-drive"])
+        self.assertEqual(self.hits("quill-2017-okc-drive.mp4"), ["quill-2017-okc-drive"])
         self.assertEqual(self.hits("Jackson's block"), ["Jackson"])
 
     def test_the_public_fixture_and_ordinary_words_are_not(self):

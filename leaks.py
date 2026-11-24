@@ -79,10 +79,11 @@ def leaks(found: re.Pattern) -> list[str]:
 
 
 def main() -> None:
-    content = Path(sys.argv[1] if len(sys.argv) > 1 else os.environ.get("BAGWORK_CONTENT", ""))
-    if not str(content) or not content.is_dir():
+    folder = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("BAGWORK_CONTENT", "")
+    if not folder or not Path(folder).is_dir():
         sys.exit("usage: python3 leaks.py DIR, or set BAGWORK_CONTENT to the folder of real manifests")
-    terms = secret_terms(content)
+    if not (terms := secret_terms(Path(folder))):
+        sys.exit(f"no manifests with players in {folder}, so there is nothing to check against")
     if hits := leaks(pattern(terms)):
         sys.exit("names a real puzzle's player or clip:\n" + "\n".join(hits))
     print(f"no leaks: {len(terms)} names and ids checked")
