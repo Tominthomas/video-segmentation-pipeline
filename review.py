@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from detail import Detail
 from matte import Matte
-from silhouette import TINTS, draw_ball, holders, load
+from silhouette import TINTS, fill_ball_masks, holders, load
 
 FPS = 30
 SOURCE_COLORS = {"mask": "#3c3", "key": "#4cf", "fit": "#fc3", "hold": "#f55"}
@@ -265,10 +265,10 @@ def main() -> None:
     render, flags = spec["render"], spec["flags"]
     kinds, masks = load(folder / "masks.npz")
     first, end = render.get("frames", (0, len(masks)))
-    # draw_ball rewrites only the ball's masks, so only they are set aside and put back for the overlay.
+    # fill_ball_masks rewrites only the ball's masks, so only they are set aside and put back for the overlay.
     raw_ball = masks[:, kinds.index("ball")].copy() if "ball" in kinds else None
     with np.errstate(divide="ignore", invalid="ignore"):
-        track = draw_ball(kinds, masks, render.get("ball_keys", []))
+        track = fill_ball_masks(kinds, masks, render.get("ball_keys", []))
     held, release, rim = holders(kinds, masks, track)
     ball = None
     if track is not None:

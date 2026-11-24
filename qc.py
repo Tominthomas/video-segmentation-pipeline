@@ -1,6 +1,6 @@
 """Flag frame ranges where tracked masks look wrong, so a review starts at the suspect frames.
 
-Run by clips.py with the project venv:  .venv/bin/python qc.py <masks.npz> <mystery> <qc.json> [shape]
+Run by clips.py with the SAM venv's python:  python qc.py <masks.npz> <mystery> <qc.json> [shape]
 [shape] is the clip's matte.npz or detail.npz, whichever draws the mystery player.
 <mystery> is a JSON list of the objects the manifest marks as the mystery player.
 qc.json holds {"flags": [{"check", "objects", "frames": [first, last], "worst"}]}, one entry per run of
@@ -38,8 +38,8 @@ MIN_RUN = 6
 # recovers from shorter occlusions on its own.
 MISSING_RUN = 10
 EDGE = 8
-# Set from five McDaniels clips and Nembhard's six (docs/SPEC.md#matting). Of the McDaniels mattes, the Houston one
-# won blind judging with 10% of frames ghosting, and the ones that lost had 26 to 66%. Nembhard's close clip had 2%.
+# Set from blind judging of eleven clips of two players (docs/SPEC.md#matting). The matte that won had 10% of frames
+# ghosting, and the ones that lost had 26 to 66%. A close clip whose matte won every frame had 2%.
 GHOST_FRAME = 0.05
 MATTE_GHOSTING = 0.2
 MATTE_FALLBACK = 0.05

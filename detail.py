@@ -1,6 +1,6 @@
 """Segment the mystery player with his own SAM 2.1 pass on a crop that follows him in the full-resolution source.
 
-Run by clips.py with the project venv:  .venv/bin/python detail.py <source.mp4> <detail.json> <detail.npz>
+Run by clips.py with the SAM venv's python:  python detail.py <source.mp4> <detail.json> <detail.npz>
 detail.json is {"clip", "masks", "mystery", "frames", "refines"}: clip.mp4, masks.npz, the mystery player's object
 index, the render's [first, end) frames or null for all, and his detail refines [{"frame", "points", "avoid",
 "box"?}] in clip pixels. With --choose first it reads masks.npz in place of the source, takes {"mystery", "frames"},
@@ -25,7 +25,7 @@ from silhouette import dilate, erode, load, others_of, shapes
 
 FPS = 30
 # "auto" takes the detail pass when his median box is under this share of the clip's height, the matte otherwise.
-# Nembhard's wide clips are 18 to 20% and his close clip 40%. McDaniels' Houston clip, whose matte won, is 26%.
+# Five wide clips of one player measure 18 to 20% and his close clip 40%. A clip whose matte won is 26%.
 DETAIL_BELOW = 0.24
 # Widths as a share of his median height in clip pixels: his box's padding in a prompt, how far past his 720p mask
 # he may reach, and how far inside it he is solid.
@@ -329,7 +329,9 @@ def run_model(crops: np.ndarray, prompted: dict[int, dict]) -> np.ndarray:
 
     from track import MODEL  # noqa: PLC0415
 
-    device = os.environ.get("SAM_DEVICE", "mps" if torch.backends.mps.is_available() else "cpu")
+    device = os.environ.get("SAM_DEVICE") or (
+        "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
     prob = np.zeros(crops.shape[:3], np.uint8)
     with tempfile.TemporaryDirectory() as tmp:
         for j, image in enumerate(crops):

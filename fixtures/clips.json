@@ -14,16 +14,25 @@
     "player": "Ray Allen",
     "title": "Game-tying corner three, 2013 Finals Game 6 (baseline replay)",
     "url": "https://www.youtube.com/watch?v=tr6XsZVb-ZE",
-    "start": 51.5,
+    "start": 48.4,
     "end": 55,
     "track": {
-      "frame": 0,
+      "frame": 84,
+      "follow": "full",
+      "zoom": 1,
+      "shape": "sam",
       "objects": [
-        {"kind": "player", "points": [[965, 430], [975, 560]]},
-        {"kind": "player", "points": [[180, 520]]},
-        {"kind": "player", "points": [[600, 500]]},
-        {"kind": "ball", "points": [[750, 25]]},
-        {"kind": "hoop", "frame": 30, "points": [[185, 305], [215, 255]]}
+        {"kind": "player", "mystery": true, "points": [[950, 220], [965, 330]], "refine": [{"frame": 40, "points": [[1015, 330], [1080, 500]]}, {"frame": 77, "points": [[950, 60], [970, 200], [990, 320], [985, 420]]}, {"frame": 118, "points": [[986, 445], [986, 500]], "avoid": [[969, 560]]}, {"frame": 128, "points": [[975, 432], [973, 493], [973, 576]], "avoid": [[947, 476], [960, 528]]}, {"frame": 192, "points": [[625, 330], [615, 450]], "avoid": [[690, 500]]}]},
+        {"kind": "player", "points": [[840, 300], [860, 560]]},
+        {"kind": "player", "points": [[520, 420], [530, 520], [600, 640]]},
+        {"kind": "player", "points": [[110, 450], [130, 600]]},
+        {"kind": "player", "frame": 40, "points": [[140, 420]]},
+        {"kind": "player", "frame": 40, "points": [[745, 300], [760, 420]], "refine": [{"frame": 118, "points": [[969, 560], [947, 497]], "avoid": [[986, 445], [986, 500]]}, {"frame": 128, "points": [[947, 476], [960, 528]], "avoid": [[975, 432], [973, 493]]}, {"frame": 176, "points": [[835, 410], [830, 480]]}, {"frame": 184, "points": [[770, 400], [775, 480]]}, {"frame": 192, "points": [[680, 380], [690, 560]], "avoid": [[625, 330]]}]},
+        {"kind": "player", "frame": 126, "points": [[265, 450], [260, 560]]},
+        {"kind": "player", "frame": 126, "points": [[365, 450]]},
+        {"kind": "player", "frame": 174, "points": [[165, 420], [170, 500]]},
+        {"kind": "ball", "frame": 126, "box": [551, 78, 578, 107]},
+        {"kind": "hoop", "frame": 126, "box": [170, 285, 240, 345], "avoid": [[230, 240], [195, 262]]}
       ]
     }
   }

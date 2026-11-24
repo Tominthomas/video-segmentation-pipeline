@@ -1,6 +1,8 @@
 # video-segmentation-pipeline spec
 
-This spec says how the repo turns a clip manifest into the silhouette renders that Bagwork serves. [README.md](../README.md) says how to run it. Bagwork itself lives in `Tominthomas/bagwork`, and the only thing it takes from here is a render that meets [the render contract](../README.md#the-render-contract).
+This spec says how the repo turns a clip manifest into the silhouette renders that Bagwork serves. [README.md](../README.md) says how to run it, and [MANIFEST.md](MANIFEST.md) describes the manifest. The only thing Bagwork takes from here is a render that meets [the render contract](../README.md#the-render-contract).
+
+The measurements below name clips by a short slug and players by letter. Player A has five wide clips and one close clip.
 
 ## Python: clip pipeline
 
@@ -26,15 +28,15 @@ A clip with one mystery player draws his shape one of three ways, set by `"shape
 | `"detail"` | his own SAM pass on a zoomed crop, see [Detail](#detail) | he is small, as in a broadcast's wide angle |
 | `"sam"` | his mask in `masks.npz` | either struggles, or neither is installed |
 
-`"auto"`, the default, picks `"detail"` when his median box in `masks.npz` over the render's frames is under 24% of the clip's height and `"matte"` otherwise. Nembhard's five wide clips measure 18 to 20% and his close clip 40%. McDaniels' Houston clip, whose matte won blind judging, is 26%, and `cle-self-lob`, whose matte lost, is 23%. [Judgments](#judgments) keeps these verdicts as data and scores the threshold against them. A clip draws one of them, never two. A machine that can't run the chosen pass prints why and draws `"sam"`.
+`"auto"`, the default, picks `"detail"` when his median box in `masks.npz` over the render's frames is under 24% of the clip's height and `"matte"` otherwise. Player A's five wide clips measure 18 to 20% and his close clip 40%. Player B's `hou-drive`, whose matte won blind judging, is 26%, and `cle-self-lob`, whose matte lost, is 23%. [Judgments](#judgments) keeps these verdicts as data and scores the threshold against them. A clip draws one of them, never two. A machine that can't run the chosen pass prints why and draws `"sam"`.
 
 ### Approve
 
-`clips.py approve` copies `silhouette.mp4` to `$BAGWORK_CONTENT/approved/<id>.mp4` only if `render_problem` returns nothing. `render_problem` is a pure function of ffprobe's JSON, chapters included, and the file's size. It mirrors `renderProblem` in the bagwork repo's `tools/bagwork/library.ts` check for check. It tests size, audio, the stream count, chapters and then each tag in the same order, and it words each refusal the same way, so a refusal here reads like the one `bagwork clips add` would print. `verify` runs it on `silhouette.mp4` too, so `build` fails a render that Bagwork would refuse. It does not run on `clip.mp4` or the filter variants, because Bagwork never takes them and `clip.mp4` keeps its audio. When the bagwork check changes, change `RENDER_TAGS`, `MAX_RENDER_BYTES` or `render_problem` to match.
+`clips.py approve` copies `silhouette.mp4` to `$BAGWORK_CONTENT/approved/<id>.mp4` only if `render_problem` returns nothing. `render_problem` is a pure function of ffprobe's JSON, chapters included, and the file's size. It mirrors Bagwork's own upload check, check for check. It tests size, audio, the stream count, chapters and then each tag in the same order, and it words each refusal the same way, so a refusal here reads like the one `bagwork clips add` would print. `verify` runs it on `silhouette.mp4` too, so `build` fails a render that Bagwork would refuse. It does not run on `clip.mp4` or the filter variants, because Bagwork never takes them and `clip.mp4` keeps its audio. When the bagwork check changes, change `RENDER_TAGS`, `MAX_RENDER_BYTES` or `render_problem` to match.
 
 ### Prompting
 
-The hoop object's box covers the rim and the net, not the rim alone, so the net shows in the silhouette. Tomin wants the net to show.
+The hoop object's box covers the rim and the net, not the rim alone, so the net shows in the silhouette.
 
 ### Tracking model
 
@@ -52,7 +54,7 @@ His shape differs little between small and large: their masks agree at a median 
 
 The numbers in this section and under [Window](#window) were measured with SAM 2.1 small, the model then. Large takes 1.28 to 1.63 times as long.
 
-SAM 2.1 small tracks one object at about 0.45 s a frame on an M4, and the GPU is the limit: device use sits at 99% while Python uses about 3% of a core. A benchmark on 2026-11-14 tracked one player through all 210 frames of `nembhard-2025-den-handles`, alternating five runs of each small variant.
+SAM 2.1 small tracks one object at about 0.45 s a frame on an M4, and the GPU is the limit: device use sits at 99% while Python uses about 3% of a core. A benchmark on 2026-11-14 tracked one player through all 210 frames of player A's `den-handles`, alternating five runs of each small variant.
 
 | Variant | Total time, median and range | Masks against today's |
 |---|---|---|
@@ -84,7 +86,7 @@ A refine changes its object's cache key, so `build` tracks that object again ove
 
 | Clip, window | Full track of the hoop | Window | Window vs full, per-frame IoU |
 |---|---|---|---|
-| `nembhard-2025-den-handles`, frames 150 to 180, refine at 160 | 115.1 s (113.9 to 115.3) | 16.2 s (15.9 to 16.7) | median 0.998, min 0.984 |
+| `den-handles`, frames 150 to 180, refine at 160 | 115.1 s (113.9 to 115.3) | 16.2 s (15.9 to 16.7) | median 0.998, min 0.984 |
 | `ray-allen-2013-finals-g6-corner-three-replay`, frames 50 to 80, refine at 60 | 55.1 s (51.8 to 55.2) | 14.6 s (14.5 to 14.7) | median 0.986, min 0.961 |
 
 Loading SAM and the clip adds 1.7 to 5.2 s to either. The window costs about 0.5 s a frame, the same rate as a full track, so it saves in proportion to the frames it skips. End to end, `clips.py window` took 17.4 to 20.7 s when the SAM slot was free. Repeated runs gave identical masks, and `masks.npz`, the object caches and `build.json` hashed the same before and after.
@@ -114,7 +116,7 @@ SAM's masks are 720p and blocky at a player's edge, so hands and the ball handle
 - **Frame map.** A 59.94 fps source does not land on the 30 fps clip by a fixed step. Each clip frame takes the source frame within three of its timestamp whose pixels match it best, on 320×180 gray thumbnails.
 - **Crop.** A square that follows his smoothed SAM box, 1.5 times the 95th percentile of his box's longer side, in source pixels. The model sees it at 960 pixels. When the square would not fit the source, the crop is the whole frame.
 - **Flashes.** A frame more than 15% brighter than the median of the three frames either side of it is a camera flash. It is scaled to that median before the model sees it.
-- **Seeds.** A seed is a frame where his SAM mask, grown by 12 pixels, touches no other player and his area is within 20% of his median. One seed per stretch of 60 frames keeps a lost matte from running far. Each seed mattes the frames nearer to it than to any other seed, forward and backward.
+- **Seeds.** A seed is a frame where his SAM mask, grown by 12 pixels, touches no other player and his area is 80% to 125% of his median. The frames split into equal stretches of about 60, and one seed per stretch keeps a lost matte from running far. Each seed mattes the frames nearer to it than to any other seed, forward and backward.
 - **Refine.** At render time, a levels curve `clip((a - 0.12) / 0.5, 0, 1)` stops motion blur ghosting. The result is limited to his SAM mask grown by the gate, which is 4% of `height` and at least 3 pixels, so it can't drift onto a defender. Inside his SAM mask shrunk by the gate it is solid, which fills holes.
 - **Fallback.** At render time, a frame whose refined matte overlaps his SAM mask with an IoU under 0.5 falls back to SAM.
 
@@ -124,13 +126,13 @@ The model step runs under the SAM slot with the same `BAGWORK_MIN_FREE` gate, be
 
 **How `silhouette.py` reads it.** `clips.py` passes the matte's path in the render spec. With a matte, the mystery player's layer is the refined alpha, sampled from source pixels straight to the output, and every layer renders at 720 tall, or the source's height when that is less. A fallback frame draws his SAM mask. Without a matte, the render is the same as before matting existed, at the crop's own size, and ffmpeg scales it to 720.
 
-**Ball.** With a mystery player, the ball draws in his white, so he and the ball read as one shape, as on guessjumpshot.com. A ball in front of his body disappears into him, and Tomin accepts that. It draws in the same layer order as before, over him. `"ball": "orange"` in the track spec keeps the orange ball. `"ball_edge": <px>` adds a dark edge that many pixels wide at 720 tall where the ball overlaps him, for either colour, and defaults to 0. The tested widths were 3 for orange and 1.5 for white. A clip with no mystery player keeps the orange ball and no edge. The ball's tracking, its shape checks and the rule that hides it on long gaps are unchanged.
+**Ball.** With a mystery player, the ball draws in his white, so he and the ball read as one shape, as on guessjumpshot.com. A ball in front of his body disappears into him, which is the cost of one shape. It draws in the same layer order as before, over him. `"ball": "orange"` in the track spec keeps the orange ball. `"ball_edge": <px>` adds a dark edge that many pixels wide at 720 tall where the ball overlaps him, for either colour, and defaults to 0. The tested widths were 3 for orange and 1.5 for white. A clip with no mystery player keeps the orange ball and no edge. The ball's tracking, its shape checks and the rule that hides it on long gaps are unchanged.
 
 Two looks were tried and not built. His matte drawn over the ball claims 60 to 75% of the ball. A ball that is white only while he holds it depends on `holders`, which gave the ball to the wrong player through a whole handles sequence, and the colour crossfade read as skin.
 
 **QC.** `qc.py` adds two clip-wide flags from `matte.npz`. `matte fallback` flags when more than 5% of matted frames fell back to SAM. `matte ghosting` flags when more than 20% of matted frames have the raw matte leaving over 5% of his SAM core under 0.5. Either flag means the matte struggled, and the review should compare it with `"shape": "detail"` and `"shape": "sam"`.
 
-The thresholds come from blind judging on 2026-11-12. The McDaniels matte that won, Houston, ghosts on 10% of frames. Three that lost ghost on 26 to 66%: `lac-pnr-dunk`, `den-iso` and `cle-self-lob`. `den-iso` also falls back on 6%. Nembhard's close clip, where the matte won 14 of 14 frames, ghosts on 2%. The fourth loser, `den-block`, passes both checks. He fills most of its frame, so the crop is the whole source and the matte adds little over SAM, and no measure here sees that. [Judgments](#judgments) scores both thresholds against these verdicts.
+The thresholds come from blind judging on 2026-11-12. Player B's matte that won, `hou-drive`, ghosts on 10% of frames. Three that lost ghost on 26 to 66%: `lac-pnr-dunk`, `den-iso` and `cle-self-lob`. `den-iso` also falls back on 6%. Player A's close clip, where the matte won 14 of 14 frames, ghosts on 2%. The fourth loser, `den-block`, passes both checks. He fills most of its frame, so the crop is the whole source and the matte adds little over SAM, and no measure here sees that. [Judgments](#judgments) scores both thresholds against these verdicts.
 
 **Install.** MatAnyone 2 lives outside the checkout in `~/.local/share/bagwork/matte/`, so every worktree on a machine shares one copy. Its own venv keeps OpenCV, SciPy and a non-commercial package out of the SAM venv. Its `pyproject.toml` fails to build a wheel at the pinned commit, so it installs editable from a checkout.
 
@@ -150,13 +152,13 @@ curl -L -o $M/matanyone2.pth https://github.com/pq-yang/MatAnyone2/releases/down
 
 > Redistribution and use for non-commercial purpose in source and binary forms, with or without modification, are permitted provided that the following conditions are met: [...] In the event that redistribution and/or use for commercial purpose in source or binary forms, with or without modification is required, please contact the contributor(s) of the work.
 
-Use is non-commercial only. Renders made with it must not go into a commercial Bagwork without the authors' permission. Turning matting off for every clip removes the dependency.
+Use is non-commercial only. Renders made with it must not be used commercially without the authors' permission. Turning matting off for every clip removes the dependency.
 
 ### Detail
 
 SAM tracks everyone on the 1280×720 clip and predicts each mask on a 256-cell grid over the whole frame, so a player 130 pixels tall is about 26 cells tall and his hands, the ball and his legs blur together. The detail pass gives the mystery player his own SAM 2.1 run on a crop that follows him in the full-resolution source. SAM still predicts on a 256-cell grid, but over the crop, so he is about 180 cells tall. The matte does the same job when he is large and clear of others, and ghosts when he is small or crowded, which is when the detail pass gains most. On a close clip it adds little and can speckle, so it is not the default there.
 
-Prototyping on Nembhard's clips settled four things. SAM's video mode over the crop sequence beats image mode per frame, which grabbed the defender more and flickered about 25% more. The zoomed mask must be his shape itself: used only to gate the matte, it changed almost nothing. A 1080 render adds nothing, so the render stays 720 tall. And the 720p track decides who is who, while the zoomed mask decides his edge.
+Prototyping on player A's clips settled four things. SAM's video mode over the crop sequence beats image mode per frame, which grabbed the defender more and flickered about 25% more. The zoomed mask must be his shape itself: used only to gate the matte, it changed almost nothing. A 1080 render adds nothing, so the render stays 720 tall. And the 720p track decides who is who, while the zoomed mask decides his edge.
 
 **`detail.npz`.** It covers the render's frames only, `[first, end)` of `clip.mp4`.
 
@@ -178,7 +180,7 @@ Prototyping on Nembhard's clips settled four things. SAM's video mode over the c
 
 - **Frame map and crop.** The matte's: the source frame that best matches each clip frame, and a square that follows his smoothed box, 1.5 times the 95th percentile of its longer side, or the whole frame when that doesn't fit. SAM sees each crop at its source size and scales it to 1024 itself.
 - **Prompts.** Each seed frame, picked by the matte's seed rule, gets his box from `masks.npz` padded by 4% of his height, one keep point deep inside each third of his mask from top to bottom, and one avoid point deep inside each other player's mask in the crop. Every prompt maps clip pixels to crop pixels through the crop's origin and the source's scale.
-- **Model.** SAM 2.1 large, the tracker's model, in video mode over the crop sequence, forward from the first prompted frame and back from it, under the SAM slot with the same `BAGWORK_MIN_FREE` gate. Its state stays on the GPU: offloaded, SAM copies each mask to the CPU without waiting, and the masks propagation yields read as empty. On Nembhard's wide clips, with crops of 432 to 528 pixels, small ran about 0.5 s a frame and the build peaked at 5.6 to 6.9 GB resident. Large's detail passes peaked at 7.0 to 7.6 GB in the model comparison.
+- **Model.** SAM 2.1 large, the tracker's model, in video mode over the crop sequence, forward from the first prompted frame and back from it, under the SAM slot with the same `BAGWORK_MIN_FREE` gate. Its state stays on the GPU: offloaded, SAM copies each mask to the CPU without waiting, and the masks propagation yields read as empty. On player A's wide clips, with crops of 432 to 528 pixels, small ran about 0.5 s a frame and the build peaked at 5.6 to 6.9 GB resident. Large's detail passes peaked at 7.0 to 7.6 GB in the model comparison.
 - **Fallback.** At render time, a frame where his mask in `masks.npz` is empty, or where his owned mask scaled to the clip overlaps it with an IoU under 0.3, draws his mask from `masks.npz`. The bar is low because the 720p mask is the coarse one. On `den-handles` the two agree at a median IoU of 0.9 and a 10th percentile of 0.8 when the detail pass is right.
 
 **Ownership.** His mask in `masks.npz` decides who is who, and `prob` decides his edge. Per crop pixel, with `p` its probability:
@@ -234,7 +236,7 @@ A verdict that rests on `"auto"` is right when `"auto"` picks the matte exactly 
 
 It exits 1 when today's thresholds get a verdict wrong.
 
-On 2026-11-14 the backfilled file reproduces every share above to the whole percent and gets no verdict wrong. `DETAIL_BELOW` holds from 0.229 to 0.261, `GHOST_FRAME` from 0.025 to 0.063, and `MATTE_GHOSTING` from 0.097 to 0.262. `MATTE_FALLBACK` can take any value from 0 to 1, because `den-iso`, the one clip that falls back on more than 5%, also ghosts on 66%. No verdict yet needs the fallback check. The four McDaniels losses are SAM wins, because Tomin kept their approved SAM renders. The Nembhard wide clips are recorded as detail wins from the detail pass's prototyping, not blind judging.
+On 2026-11-14 the backfilled file reproduces every share above to the whole percent and gets no verdict wrong. `DETAIL_BELOW` holds from 0.229 to 0.261, `GHOST_FRAME` from 0.025 to 0.063, and `MATTE_GHOSTING` from 0.097 to 0.262. `MATTE_FALLBACK` can take any value from 0 to 1, because `den-iso`, the one clip that falls back on more than 5%, also ghosts on 66%. No verdict yet needs the fallback check. Player B's four losses are SAM wins, because their approved renders kept SAM's shape. Player A's wide clips are recorded as detail wins from the detail pass's prototyping, not blind judging.
 
 ### Encoding
 
@@ -264,7 +266,7 @@ A sharper encode needs a per-render byte budget first, such as a CRF chosen from
 
 **Measure.** Each layer's coverage is taken over the frames the viewer sees, each frame in its own crop window. Wobble is the coverage that moves out and comes back within 6 frames (0.2 s): the sum of the frame-to-frame changes over the window, less the net change across it, per pixel of edge. A one-frame and a two-frame wobble count the same. A part that crosses a pixel and leaves it within 0.2 s counts too, so a thin limb in steady motion scores as wobble, and a filter that deletes it scores as removing wobble. So each share removed below is a drop in this wobble measure, not a share of the jitter. On synthetic discs, a disc in steady motion scores 0.05 px a frame, and 1 px of jitter in its radius raises that to 0.18. Each variant was also checked for the area it adds or cuts more than 2 px from that frame's own shape, and for how much it softens the edge. A first count of one-frame reversals alone was dropped, because a 3-frame median removes most of them by design: 0.57 to 0.05 px on a 12-frame stretch of `den-handles`.
 
-**Clips.** Eight library clips, re-rendered from their cached `masks.npz`, `matte.npz` and `detail.npz` with no model run: McDaniels `hou-drive` (matte), Nembhard `den-handles`, `gsw-drive` and `tor-drive` (detail) and `okc-pullup-close` (matte), and Tatum `phi-go-ahead-three` (detail), `atl-courtside-handles` (matte) and `mil-slomo-dunk` (SAM). Seven re-render pixel for pixel like the library's `silhouette.mp4`. The library's `mil-slomo-dunk` render differs from what its manifest, which now sets `"shape": "sam"`, renders today, so that clip measures today's render.
+**Clips.** Eight library clips, re-rendered from their cached `masks.npz`, `matte.npz` and `detail.npz` with no model run: player B's `hou-drive` (matte), player A's `den-handles`, `gsw-drive` and `tor-drive` (detail) and `okc-pullup-close` (matte), and player C's `phi-go-ahead-three` (detail), `atl-courtside-handles` (matte) and `mil-slomo-dunk` (SAM). Seven re-render pixel for pixel like the library's `silhouette.mp4`. The library's `mil-slomo-dunk` render differs from what its manifest, which now sets `"shape": "sam"`, renders today, so that clip measures today's render.
 
 **Today.** The mystery player's edge wobbles 1.7 to 2.9 px a frame, and the gray players' 1.2 to 3.5. Part of that is the crop window and the broadcast camera moving, which no per-layer filter removes. On the holder clips, the hoop's mask barely changes, and every variant leaves at least 90% of its 0.6 to 2.2 px.
 
@@ -289,7 +291,7 @@ The 2 px bound keeps 29 to 54% of the plain median's gain. The measure can't say
 | `ruff` (brew) | 0.17.4 | lint and format |
 | `ty` (brew) | 0.0.100 | type check |
 | numpy, Pillow (SAM venv) | 2.5.4, 13.0.0 | every script |
-| torch, torchvision, SAM 2.1 (SAM venv, see [README.md](../README.md#silhouettes)) | 2.15.0, 0.29.2, commit `2b90b9f`, all in `sam-requirements.txt` | `track.py`, `detail.py`, `propose.py` |
+| torch, torchvision, SAM 2.1 (SAM venv, see [README.md](../README.md#install-sam)) | 2.15.0, 0.29.2, commit `2b90b9f`, all in `sam-requirements.txt` | `track.py`, `detail.py`, `propose.py` |
 | MatAnyone 2 (own venv, see [Matting](#matting)) | commit `0079197`, weights sha256 `5e9821e4…5914` | the mystery player's matte. S-Lab License 1.0, non-commercial use only. |
 
 `python.yml` runs on pull requests, on pushes to `main` and on manual dispatch. It runs `ruff check`, `ruff format --check`, `ty check` and `python3 -m unittest discover tests`, and sets `timeout-minutes: 5`. `ty check` runs against numpy and Pillow at the versions `sam-requirements.txt` pins. torch, torchvision, SAM and MatAnyone 2 are too big to install there, so `pyproject.toml` lets their imports go unresolved and they type as `Any`.

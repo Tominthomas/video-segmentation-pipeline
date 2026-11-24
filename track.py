@@ -60,7 +60,9 @@ def session(clip: Path, offload_state: bool):
     An offloaded state saves memory on long tracks, but SAM then copies each prompted mask to the CPU without
     waiting, so the mask add_new_points_or_box returns can be read before it lands. Preview keeps it on device.
     """
-    device = os.environ.get("SAM_DEVICE", "mps" if torch.backends.mps.is_available() else "cpu")
+    device = os.environ.get("SAM_DEVICE") or (
+        "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
     with tempfile.TemporaryDirectory() as tmp:
         frames = Path(tmp) / "%05d.jpg"
         subprocess.run(

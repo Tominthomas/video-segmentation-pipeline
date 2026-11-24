@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -97,7 +98,7 @@ class ShapeRecipes(unittest.TestCase):
         folder.mkdir()
         self.art = clips.Artifacts(folder)
         self.art.ledger["source.mp4"] = "source"
-        self.clip = clips.Clip(id="c", player="p", title="t", url="u", track=json.dumps({"objects": [{}, {}]}))
+        self.clip = clips.Clip(id="c", player="p", title="t", url="u", track={"objects": [{}, {}]})
         self.objects = [{"kind": "player", "cache": str(folder / "objects" / f"{n}.npz")} for n in "ab"]
         self.runs = []
         for step in ("detail_step", "matte_step"):
@@ -122,7 +123,7 @@ class ShapeRecipes(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             detail = clips.with_detail(self.clip, self.art, Path("source.mp4"), render, self.objects)["detail"]
             matte = clips.with_matte(self.clip, self.art, Path("source.mp4"), render, self.objects)["matte"]
-        return [clips.drawn_by(self.art, detail), clips.drawn_by(self.art, matte)]
+        return [clips.shape_inputs(self.art, detail), clips.shape_inputs(self.art, matte)]
 
     def edit(self, script: str, old: str, new: str) -> None:
         path = self.code / script
@@ -197,3 +198,51 @@ class ShapeRecipes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Manifest(unittest.TestCase):
+    def load(self, entries: object) -> str:
+        """The error load_manifest exits with on entries, written as JSON or as raw text."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clips.json"
+            path.write_text(entries if isinstance(entries, str) else json.dumps(entries))
+            with self.assertRaises(SystemExit) as stop:
+                clips.load_manifest(path)
+            return str(stop.exception.code)
+
+    def entry(self, **fields: object) -> dict:
+        return {"id": "doe-drive", "player": "Jane Doe", "title": "Drive", "url": "https://x.com/a/status/1", **fields}
+
+    def test_bad_json_names_the_file(self):
+        self.assertIn("clips.json", self.load("[{"))
+
+    def test_an_id_that_leaves_its_folder_is_refused(self):
+        self.assertIn("may hold only", self.load([self.entry(id="../doe")]))
+
+    def test_a_track_with_no_objects_is_refused(self):
+        self.assertIn("at least one object", self.load([self.entry(track={"frame": 0, "objects": []})]))
+
+
+class Approve(unittest.TestCase):
+    def test_an_unreadable_render_is_refused_and_the_rest_still_run(self):
+        def ffprobe_fails(cmd, check=False, **_):
+            """subprocess.run as it behaves when ffprobe can't read the file, so CI needs no ffprobe."""
+            if check:
+                raise subprocess.CalledProcessError(1, cmd, stderr="Invalid data found")
+            return subprocess.CompletedProcess(cmd, 1, "", "Invalid data found")
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(clips, "MEDIA", Path(tmp)),
+            mock.patch.object(clips.subprocess, "run", ffprobe_fails),
+        ):
+            for name in ("broken", "missing-next"):
+                (Path(tmp) / "clips" / name).mkdir(parents=True)
+            (Path(tmp) / "clips" / "broken" / "silhouette.mp4").write_bytes(b"not a video")
+            pair = [clips.Clip(id=i, player="p", title="t", url="u") for i in ("broken", "missing-next")]
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                ok = clips.approve(pair, Path(tmp) / "approved")
+        self.assertFalse(ok)
+        self.assertIn("broken: FAIL ffprobe cannot read it", out.getvalue())
+        self.assertIn("missing-next: FAIL no", out.getvalue())
