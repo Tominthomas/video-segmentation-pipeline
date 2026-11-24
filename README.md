@@ -16,7 +16,8 @@ Turn a basketball highlight into a silhouette clue. The player to guess and the 
 `clips.py` runs every step. Each step writes one file to `media/clips/<id>/`, and a rerun rebuilds only the files whose inputs changed. A change to the look re-renders in seconds and never runs a model again.
 
 ```mermaid
-flowchart LR
+%%{init: {"flowchart": {"htmlLabels": false}}}%%
+flowchart TD
 	post([YouTube or X post]) -- yt-dlp --> source[source.mp4]
 	source -- "ffmpeg, 720p 30 fps" --> clip[clip.mp4]
 	clip -- "track.py, SAM 2.1" --> masks[masks.npz]
