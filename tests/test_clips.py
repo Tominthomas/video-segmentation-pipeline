@@ -220,3 +220,18 @@ class Manifest(unittest.TestCase):
 
     def test_a_track_with_no_objects_is_refused(self):
         self.assertIn("at least one object", self.load([self.entry(track={"frame": 0, "objects": []})]))
+
+
+class Approve(unittest.TestCase):
+    def test_an_unreadable_render_is_refused_and_the_rest_still_run(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "MEDIA", Path(tmp)):
+            for name in ("broken", "missing-next"):
+                (Path(tmp) / "clips" / name).mkdir(parents=True)
+            (Path(tmp) / "clips" / "broken" / "silhouette.mp4").write_bytes(b"not a video")
+            pair = [clips.Clip(id=i, player="p", title="t", url="u") for i in ("broken", "missing-next")]
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                ok = clips.approve(pair, Path(tmp) / "approved")
+        self.assertFalse(ok)
+        self.assertIn("broken: FAIL ffprobe cannot read it", out.getvalue())
+        self.assertIn("missing-next: FAIL no", out.getvalue())

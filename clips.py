@@ -204,9 +204,15 @@ def run(cmd: list[str]) -> str:
 
 
 def probe(path: Path) -> dict:
-    return json.loads(
-        run(["ffprobe", "-v", "error", "-of", "json", "-show_format", "-show_streams", "-show_chapters", str(path)])
-    )
+    """ffprobe's JSON for the file. It raises CalledProcessError on a file ffprobe can't read, so approve can refuse
+    that one render and go on to the next."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-of", "json", "-show_format", "-show_streams", "-show_chapters", str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return json.loads(out)
 
 
 class Artifacts:
