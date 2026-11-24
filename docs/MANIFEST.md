@@ -50,7 +50,7 @@ A manifest is a JSON array of clip entries. `clips.py` reads it with `--manifest
 
 ## Example
 
-The replay entry in `fixtures/clips.json` tracks three players, the ball and the hoop, and prompts the hoop on frame 30 instead of frame 0.
+This is the replay entry in `fixtures/clips.json`, cut to four of its eleven objects. The mystery player has one of his five refines. The second object is the referee, tracked so the mystery player's legs don't float beside an empty gap. The ball and the hoop are prompted with boxes on frame 126, and the hoop's `avoid` points keep the backboard out.
 
 ```json
 {
@@ -58,16 +58,18 @@ The replay entry in `fixtures/clips.json` tracks three players, the ball and the
 	"player": "Ray Allen",
 	"title": "Game-tying corner three, 2013 Finals Game 6 (baseline replay)",
 	"url": "https://www.youtube.com/watch?v=tr6XsZVb-ZE",
-	"start": 51.5,
+	"start": 48.4,
 	"end": 55,
 	"track": {
-		"frame": 0,
+		"frame": 84,
+		"follow": "full",
+		"zoom": 1,
+		"shape": "sam",
 		"objects": [
-			{"kind": "player", "points": [[965, 430], [975, 560]]},
-			{"kind": "player", "points": [[180, 520]]},
-			{"kind": "player", "points": [[600, 500]]},
-			{"kind": "ball", "points": [[750, 25]]},
-			{"kind": "hoop", "frame": 30, "points": [[185, 305], [215, 255]]}
+			{"kind": "player", "mystery": true, "points": [[950, 220], [965, 330]], "refine": [{"frame": 40, "points": [[1015, 330], [1080, 500]]}]},
+			{"kind": "player", "points": [[840, 300], [860, 560]]},
+			{"kind": "ball", "frame": 126, "box": [551, 78, 578, 107]},
+			{"kind": "hoop", "frame": 126, "box": [170, 285, 240, 345], "avoid": [[230, 240], [195, 262]]}
 		]
 	}
 }

@@ -1,32 +1,61 @@
 # video-segmentation-pipeline
 
-This pipeline turns a basketball highlight clip into a silhouette video. Players draw in white, the ball in orange and the hoop in gray, on black, with the crop following the play. [SAM 2.1](https://github.com/facebookresearch/sam2) tracks each object from a few click points, and an optional matting or zoomed pass sharpens the edge of one "mystery" player. The renders are clues for Bagwork, a daily guess-the-player game.
+[![python](https://github.com/Tominthomas/video-segmentation-pipeline/actions/workflows/python.yml/badge.svg)](https://github.com/Tominthomas/video-segmentation-pipeline/actions/workflows/python.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-`clips.py` runs every step. It fetches the clip, tracks it, renders it, checks the result and caches each artifact, so a rerun redoes only what changed. [docs/MANIFEST.md](docs/MANIFEST.md) describes the clip manifest, and [docs/SPEC.md](docs/SPEC.md) explains how each artifact is made and why.
+Turn a basketball highlight into a silhouette clue. The player to guess and the ball draw in white, the other players in dark gray and the hoop in light gray, all on black, with the crop following the play.
 
-## Requirements
+<p align="center">
+	<img src="docs/images/silhouette.gif" alt="Silhouette render of the public sample: the shooter in white catches in the corner and rises for a three over gray defenders, and the ball drops through the net" width="640">
+</p>
 
-- A Mac with Apple Silicon, where SAM runs on the Apple GPU. That is the only setup the pipeline has run on. On Linux, `clips.py` reads free memory from `/proc/meminfo` and SAM runs on CUDA when it is available, but nobody has tested that path. `SAM_DEVICE` picks the torch device by hand. `SAM_DEVICE=cpu` works anywhere, slower.
-- About 10 GB of free memory while SAM runs. SAM 2.1 large peaked at 7.8 to 10.0 GB on four test clips. `clips.py` waits until 30% of memory is free before it starts SAM. Set `BAGWORK_MIN_FREE` to change that percentage.
-- Python 3.14, `ffmpeg` and `yt-dlp`. For development, also `ruff` and `ty`.
+[SAM 2.1](https://github.com/facebookresearch/sam2) tracks every object from a few click points. A matting pass or a zoomed second SAM pass then sharpens the edge of the player to guess. The renders are the daily clues in Bagwork, a guess-the-player game.
 
-```sh
-brew install python@3.14 ffmpeg yt-dlp ruff ty
+## How it works
+
+`clips.py` runs every step. Each step writes one file to `media/clips/<id>/`, and a rerun rebuilds only the files whose inputs changed. A change to the look re-renders in seconds and never runs a model again.
+
+```mermaid
+flowchart LR
+	post([YouTube or X post]) -- yt-dlp --> source[source.mp4]
+	source -- "ffmpeg, 720p 30 fps" --> clip[clip.mp4]
+	clip -- "track.py, SAM 2.1" --> masks[masks.npz]
+	masks -.-> matte[matte.npz]
+	source -. "matte.py, MatAnyone 2" .-> matte
+	masks -.-> detail[detail.npz]
+	source -. "detail.py, SAM 2.1 zoomed" .-> detail
+	masks -- silhouette.py --> render[silhouette.mp4]
+	matte -.-> render
+	detail -.-> render
+	masks -- qc.py --> qc[qc.json]
+	render -- clips.py approve --> approved([approved/ID.mp4])
 ```
 
-## Install SAM
+The dotted steps are optional. A clip draws the player to guess from at most one of them, picked by his size in the frame. [docs/SPEC.md](docs/SPEC.md) explains each step and the measurements behind its settings.
 
-SAM and every pipeline script run in one venv outside the checkout, so every worktree on the machine shares it. Create it from the pins:
+## Install
 
-```sh
-S=~/.local/share/bagwork/sam
-python3.14 -m venv $S/venv
-SAM2_BUILD_CUDA=0 $S/venv/bin/pip install --no-deps -r sam-requirements.txt
-```
+The pipeline runs on a Mac with Apple Silicon, where SAM uses the Apple GPU. On Linux, `clips.py` reads free memory from `/proc/meminfo` and SAM runs on CUDA when it is available, but that path is untested. `SAM_DEVICE` sets the torch device by hand.
 
-`--no-deps` holds every package to the version that `sam-requirements.txt` pins. Before each step that uses the venv, `clips.py` checks the venv against the pins and stops at the first package that differs. The SAM 2.1 large weights, about 900 MB, download from Hugging Face on the first track.
+1. Install the tools:
 
-Matting is optional and has its own venv. [docs/SPEC.md](docs/SPEC.md#matting) has the install steps. MatAnyone 2 is under a non-commercial license. Without it, a clip that would use the matte draws SAM's shape and the build says why.
+	```sh
+	brew install python@3.14 ffmpeg yt-dlp ruff ty
+	```
+
+2. Create the SAM venv. It lives outside the checkout, so every worktree on the machine shares it:
+
+	```sh
+	S=~/.local/share/bagwork/sam
+	python3.14 -m venv $S/venv
+	SAM2_BUILD_CUDA=0 $S/venv/bin/pip install --no-deps -r sam-requirements.txt
+	```
+
+	`--no-deps` holds every package to its pin. Before each step that uses the venv, `clips.py` checks the venv against `sam-requirements.txt` and stops at the first package that differs. The SAM 2.1 large weights download from Hugging Face on the first track.
+
+3. Optionally, install matting. [docs/SPEC.md](docs/SPEC.md#matting) has the steps. MatAnyone 2 allows non-commercial use only. Without it, a clip that would use the matte draws SAM's shape, and the build says why.
+
+SAM 2.1 large needs about 10 GB of free memory. It peaked at 7.8 to 10.0 GB on four test clips. `clips.py` runs one SAM job at a time and waits until 30% of memory is free. Set `BAGWORK_MIN_FREE` to change that percentage.
 
 ## Build the sample clips
 
@@ -38,30 +67,47 @@ python3 clips.py build
 
 Each clip gets a folder under `media/clips/<id>/`, which git ignores:
 
-| File | What it is |
+| File | What it holds |
 |---|---|
 | `source.mp4` | the fetched window, at up to 1080p |
 | `clip.mp4` | the window at 720p and 30 fps, with audio |
 | `thermal.mp4` | a blurred heat-map clue, silent |
 | `contact.png` | a contact sheet of frames |
-| `masks.npz` | SAM's masks, for clips with a `track` entry |
-| `silhouette.mp4` | the silhouette render, for clips with a `track` entry |
+| `masks.npz` | SAM's masks, for a clip with a `track` entry |
+| `silhouette.mp4` | the silhouette render, for a clip with a `track` entry |
 
-Tracking takes about 0.5 seconds per object per frame on an M4, so the 105-frame replay, with five objects, tracks in a few minutes. Rendering takes seconds, and a change to the look never runs SAM again. Each build also checks the size, duration, audio and metadata of every output, and checks `silhouette.mp4` against [the render contract](#the-render-contract).
+Tracking takes about 0.5 seconds per object per frame on an M4. The replay has 198 frames and 11 objects, so expect its first build to take about 20 minutes. Later builds reuse the cached masks. Each build checks the size, duration, audio and metadata of every output, and checks `silhouette.mp4` against [the render contract](#the-render-contract).
 
-To see the masks and an overlay with the QC flags in a browser, run `python3 clips.py review <id>`.
+To see the masks, an overlay and the QC flags in a browser, run `python3 clips.py review <id>`.
 
 ## Add your own clip
 
 1. Find the moment. `python3 clips.py scout <url>` saves one frame per second and prints the path of a `sheet.html` labelled by second. Skip this step for a clip that is already cut.
 2. Add an entry. `python3 clips.py add --manifest FILE <url> --player NAME` scouts the post and appends a stub. `add` has no default manifest, so an entry never lands in `fixtures/clips.json` by accident. Set `start` and `end`, or leave both out for the whole video.
-3. Prompt the objects. `python3 clips.py propose --manifest FILE <id> --frame N` draws numbered boxes around the players and the ball to pick points from. Add a `track` entry, as [docs/MANIFEST.md](docs/MANIFEST.md#track) describes, and mark the player to guess with `"mystery": true`.
+3. Pick the prompts. `python3 clips.py propose --manifest FILE <id> --frame N` draws numbered boxes around the players and the ball. Add a `track` entry, as [docs/MANIFEST.md](docs/MANIFEST.md#track) describes, and mark the player to guess with `"mystery": true`.
 4. Check the prompts. `python3 clips.py preview --manifest FILE <id>` shows each prompt's mask on its frame before a full track.
 5. Build. `python3 clips.py build --manifest FILE <id>`.
 
-If a mask drifts, add a `refine` to the object. A refine changes the object's cache key, so the next build tracks that object again over the whole clip. To check a refine first, run `python3 clips.py window --manifest FILE <id> --frames 150-180:3 --objects 2`. It tracks only the listed objects over those frames and writes `window.png`, with no change to the cached masks. If the ball is lost in a crowd, `python3 clips.py crops --manifest FILE <id> --frames 140-160:4 --box x0,y0,x1,y1` writes gridded zooms to read `ball_keys` off.
+If a mask drifts, add a `refine` to the object. A refine changes the object's cache key, so the next build tracks that object again over the whole clip. To check a refine first, run `python3 clips.py window --manifest FILE <id> --frames 150-180:3 --objects 2`. It tracks only the listed objects over those frames and writes `window.png`, with no change to the cached masks. If SAM loses the ball in a crowd, `python3 clips.py crops --manifest FILE <id> --frames 140-160:4 --box x0,y0,x1,y1` writes gridded zooms to read `ball_keys` off.
 
 Replay angles make better clues than the wide broadcast shot. The player is bigger and there is no score bug.
+
+## Find your way around
+
+| File | Job |
+|---|---|
+| `clips.py` | the command line, the artifact cache, the SAM slot and the render contract |
+| `track.py` | tracks every object through the clip with SAM 2.1 and writes `masks.npz` |
+| `matte.py` | mattes the player to guess with MatAnyone 2 on a crop of the full-resolution source |
+| `detail.py` | runs SAM 2.1 again on a zoomed crop that follows the player to guess |
+| `silhouette.py` | plans the crop and draws each frame from the masks |
+| `qc.py` | flags the frames where a mask looks wrong, and a matte or detail pass that struggled, in `qc.json` |
+| `review.py` | writes `review.html`, an overlay with the QC flags |
+| `propose.py`, `crops.py` | draw the numbered boxes and gridded zooms used to pick prompts |
+| `judge.py` | scores the shape thresholds against recorded human verdicts |
+| `leaks.py` | checks the repo and unpushed commits for real players |
+
+`clips.py` runs each worker as its own process in the SAM venv, with a JSON spec in and one file out. A worker never reads the manifest.
 
 ## The render contract
 
