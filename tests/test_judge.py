@@ -26,7 +26,7 @@ def verdict(winner: str, *rules: str) -> Verdict:
     return Verdict(winner, "blind", rules, "")
 
 
-# Like the spec's Houston and cle-self-lob clips: a matte that won at 26% tall and 10% ghosting, and one that lost
+# Like the spec's hou-drive and cle-self-lob clips: a matte that won at 26% tall and 10% ghosting, and one that lost
 # at 23% tall and 30% ghosting.
 WON = (verdict("matte", "auto", "matte qc"), measured(0.26, ghosting=0.10))
 LOST = (verdict("sam", "auto", "matte qc"), measured(0.23, ghosting=0.30))
