@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -224,7 +225,17 @@ class Manifest(unittest.TestCase):
 
 class Approve(unittest.TestCase):
     def test_an_unreadable_render_is_refused_and_the_rest_still_run(self):
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(clips, "MEDIA", Path(tmp)):
+        def ffprobe_fails(cmd, check=False, **_):
+            """subprocess.run as it behaves when ffprobe can't read the file, so CI needs no ffprobe."""
+            if check:
+                raise subprocess.CalledProcessError(1, cmd, stderr="Invalid data found")
+            return subprocess.CompletedProcess(cmd, 1, "", "Invalid data found")
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(clips, "MEDIA", Path(tmp)),
+            mock.patch.object(clips.subprocess, "run", ffprobe_fails),
+        ):
             for name in ("broken", "missing-next"):
                 (Path(tmp) / "clips" / name).mkdir(parents=True)
             (Path(tmp) / "clips" / "broken" / "silhouette.mp4").write_bytes(b"not a video")
