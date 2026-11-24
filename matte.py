@@ -37,8 +37,9 @@ CROP_SMOOTH_FRAMES = 9
 # A frame this much brighter than the median of FLASH_NEIGHBORS frames either side is a camera flash.
 FLASH = 1.15
 FLASH_NEIGHBORS = 3
-# A seed's mask grown by SEED_REACH clip pixels touches no other player, and its area is within SEED_AREA of his
-# median. One seed per SEED_EVERY frames keeps a lost matte from running far.
+# A seed's mask grown by SEED_REACH clip pixels touches no other player, and its area is no further than SEED_AREA
+# from his median by ratio: at 0.2, from 80% to 125% of it. One seed per stretch of about SEED_EVERY frames keeps a
+# lost matte from running far.
 SEED_REACH = 12
 SEED_AREA = 0.2
 SEED_EVERY = 60
@@ -211,10 +212,11 @@ def flashes(means: np.ndarray) -> dict[int, float]:
 
 
 def seeds(kinds: list[str], masks: np.ndarray, mystery: int, first: int, end: int) -> list[int]:
-    """The clip frames that seed the model, one per stretch of up to SEED_EVERY frames.
+    """The clip frames that seed the model, one per stretch of about SEED_EVERY frames.
 
-    A stretch's seed is its frame whose mask, grown by SEED_REACH, touches no other player and whose area is
-    nearest his median, within SEED_AREA. A stretch with no such frame has no seed and is matted from its neighbours'.
+    The frames split into round(frames / SEED_EVERY) equal stretches. A stretch's seed is its frame whose mask, grown
+    by SEED_REACH, touches no other player and whose area is nearest his median, from 1 - SEED_AREA to
+    1 / (1 - SEED_AREA) times it. A stretch with no such frame has no seed and is matted from its neighbours'.
     With none in the whole clip, the frame touching other players least seeds it all.
     """
     area = masks[first:end, mystery].sum(axis=(1, 2)).astype(float)

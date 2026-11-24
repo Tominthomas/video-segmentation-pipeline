@@ -97,7 +97,7 @@ class ShapeRecipes(unittest.TestCase):
         folder.mkdir()
         self.art = clips.Artifacts(folder)
         self.art.ledger["source.mp4"] = "source"
-        self.clip = clips.Clip(id="c", player="p", title="t", url="u", track=json.dumps({"objects": [{}, {}]}))
+        self.clip = clips.Clip(id="c", player="p", title="t", url="u", track={"objects": [{}, {}]})
         self.objects = [{"kind": "player", "cache": str(folder / "objects" / f"{n}.npz")} for n in "ab"]
         self.runs = []
         for step in ("detail_step", "matte_step"):
@@ -122,7 +122,7 @@ class ShapeRecipes(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             detail = clips.with_detail(self.clip, self.art, Path("source.mp4"), render, self.objects)["detail"]
             matte = clips.with_matte(self.clip, self.art, Path("source.mp4"), render, self.objects)["matte"]
-        return [clips.drawn_by(self.art, detail), clips.drawn_by(self.art, matte)]
+        return [clips.shape_inputs(self.art, detail), clips.shape_inputs(self.art, matte)]
 
     def edit(self, script: str, old: str, new: str) -> None:
         path = self.code / script

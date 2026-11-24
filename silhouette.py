@@ -107,7 +107,8 @@ def load(path: Path, frames: list[int] | None = None) -> tuple[list[str], np.nda
 
 
 def shapes(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per frame of one object's [frame, h, w] masks: its area, box (x0, y0, x1, y1) and centroid (x, y).
+    """Per frame of one object's [frame, h, w] masks: its area, box (x0, y0, x1, y1) and centroid (x, y). The box's
+    right and bottom edges are exclusive, one past the last pixel.
 
     Box and centroid are NaN on frames where the object isn't visible.
     """
@@ -241,9 +242,9 @@ def ball_track(kinds: list[str], masks: np.ndarray, keys: list) -> Track:
     return Track(xy, radius, source)
 
 
-def draw_ball(kinds: list[str], masks: np.ndarray, keys: list) -> Track | None:
-    """Keep the ball's masks on ball_track()'s "mask" frames and draw a disc on every other frame, print which
-    frames were filled in, and return the track."""
+def fill_ball_masks(kinds: list[str], masks: np.ndarray, keys: list) -> Track | None:
+    """Rewrite the ball's masks in place: keep them on ball_track()'s "mask" frames and put a disc on every other
+    frame. Print which frames were filled in, and return the track."""
     if "ball" not in kinds:
         return None
     track = ball_track(kinds, masks, keys)
@@ -303,7 +304,8 @@ def erode(mask: np.ndarray, radius: int) -> np.ndarray:
 
 
 def boxes_of(masks: np.ndarray) -> list[tuple[int, int, int, int] | None]:
-    """Per frame, the box around every pixel of the given objects, or None when none are visible."""
+    """Per frame, the box (x0, y0, x1, y1) around every pixel of the given objects, or None when none are visible.
+    The box's right and bottom edges are inclusive, on the last pixel."""
     boxes = []
     for frame in masks.any(axis=1):
         ys, xs = np.nonzero(frame)
@@ -398,8 +400,8 @@ def possessions(near: dict[int, dict[int, tuple[float, float]]], reach: float) -
 def holders(
     kinds: list[str], masks: np.ndarray, track: Track | None
 ) -> tuple[list[int | None], int | None, int | None]:
-    """Per frame, which player holds the ball (None while it's loose or in the air), the release frame, and the
-    frame the ball reaches the rim.
+    """Per frame, which player the crop follows as holding the ball, the release frame, and the frame the ball reaches
+    the rim. A frame is None while the ball is loose, except that the shooter holds it from his last possession on.
 
     Only frames where the track saw the ball (see Track.seen) count toward possessions or reach the rim. A fitted
     or held center is a guess, and one that crosses a player or the hoop would invent a holder or a finish. A held
@@ -593,7 +595,7 @@ def main() -> None:
     kinds, masks = load(masks_path)
     render = json.loads(render_path.read_text())
     with np.errstate(divide="ignore", invalid="ignore"):
-        track = draw_ball(kinds, masks, render.get("ball_keys", []))
+        track = fill_ball_masks(kinds, masks, render.get("ball_keys", []))
     size, crops = windows(kinds, masks, render, track)
     if track:
         hide_ball(kinds, masks, track)

@@ -169,7 +169,7 @@ def mysteries(manifests: list[Path]) -> dict[str, int]:
     found = {}
     for manifest in manifests:
         for clip in load_manifest(manifest):
-            objects = json.loads(clip.track)["objects"] if clip.track else []
+            objects = clip.track["objects"] if clip.track else []
             marked = [i for i, obj in enumerate(objects) if obj.get("mystery")]
             if len(marked) == 1:
                 found[clip.id] = marked[0]

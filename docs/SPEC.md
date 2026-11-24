@@ -116,7 +116,7 @@ SAM's masks are 720p and blocky at a player's edge, so hands and the ball handle
 - **Frame map.** A 59.94 fps source does not land on the 30 fps clip by a fixed step. Each clip frame takes the source frame within three of its timestamp whose pixels match it best, on 320×180 gray thumbnails.
 - **Crop.** A square that follows his smoothed SAM box, 1.5 times the 95th percentile of his box's longer side, in source pixels. The model sees it at 960 pixels. When the square would not fit the source, the crop is the whole frame.
 - **Flashes.** A frame more than 15% brighter than the median of the three frames either side of it is a camera flash. It is scaled to that median before the model sees it.
-- **Seeds.** A seed is a frame where his SAM mask, grown by 12 pixels, touches no other player and his area is within 20% of his median. One seed per stretch of 60 frames keeps a lost matte from running far. Each seed mattes the frames nearer to it than to any other seed, forward and backward.
+- **Seeds.** A seed is a frame where his SAM mask, grown by 12 pixels, touches no other player and his area is 80% to 125% of his median. The frames split into equal stretches of about 60, and one seed per stretch keeps a lost matte from running far. Each seed mattes the frames nearer to it than to any other seed, forward and backward.
 - **Refine.** At render time, a levels curve `clip((a - 0.12) / 0.5, 0, 1)` stops motion blur ghosting. The result is limited to his SAM mask grown by the gate, which is 4% of `height` and at least 3 pixels, so it can't drift onto a defender. Inside his SAM mask shrunk by the gate it is solid, which fills holes.
 - **Fallback.** At render time, a frame whose refined matte overlaps his SAM mask with an IoU under 0.5 falls back to SAM.
 

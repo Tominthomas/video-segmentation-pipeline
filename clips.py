@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Fetch NBA highlight clips and render Bagwork's filtered variants.
+"""Fetch NBA highlight clips and render them as silhouette clues for Bagwork.
 
   python3 clips.py scout <url>                         frames every second, to pick start/end
   python3 clips.py add --manifest FILE <url> --player NAME [--id ID]   scout, then add a manifest stub
-  python3 clips.py build [--manifest FILE] [id ...]    fetch, normalize, filter, verify
+  python3 clips.py build [--manifest FILE] [id ...]    fetch, track, render the silhouette, verify
   python3 clips.py approve [--manifest FILE] id ...    check each silhouette.mp4 against Bagwork's render contract,
                                                        then copy it to $BAGWORK_CONTENT/approved/<id>.mp4
   python3 clips.py preview [--manifest FILE] id        each prompt's mask, before a full track
@@ -145,7 +145,7 @@ class Clip:
     end: float | None = None
     hide: tuple[tuple[int, int, int, int], ...] = ()
     crop: Crop | None = None
-    track: str | None = None
+    track: dict | None = None
 
 
 # An id names the clip's folder and its approved file, so it must be one plain path component.
@@ -173,7 +173,8 @@ def load_manifest(path: Path) -> list[Clip]:
                 **entry,
                 "hide": tuple(tuple(box) for box in entry.get("hide", [])),
                 "crop": parse_crop(entry["crop"]) if "crop" in entry else None,
-                "track": json.dumps(entry["track"], sort_keys=True) if "track" in entry else None,
+                # Sorted keys, so a render recipe built from the spec doesn't change with the manifest's key order.
+                "track": json.loads(json.dumps(entry["track"], sort_keys=True)) if "track" in entry else None,
             }
             clip = Clip(**fields)
         except TypeError as e:
@@ -182,7 +183,7 @@ def load_manifest(path: Path) -> list[Clip]:
             sys.exit(
                 f"{path.name} entry {i}: id {clip.id!r} may hold only letters, digits, dots, hyphens and underscores"
             )
-        if clip.track is not None and not json.loads(clip.track).get("objects"):
+        if clip.track is not None and not clip.track.get("objects"):
             sys.exit(f"{clip.id}: track needs at least one object")
         if (clip.start is None) != (clip.end is None):
             sys.exit(f"{clip.id}: give both start and end, or neither for the whole video")
@@ -228,14 +229,14 @@ class Artifacts:
 
     def make(self, name: str, recipe: list, build) -> Path:
         target = self.folder / name
-        spec = hashlib.sha256(json.dumps(recipe).encode()).hexdigest()
-        if target.exists() and self.ledger.get(name) == spec:
+        recipe_hash = hashlib.sha256(json.dumps(recipe).encode()).hexdigest()
+        if target.exists() and self.ledger.get(name) == recipe_hash:
             return target
         tmp = target.with_name(f".tmp-{target.name}")
         tmp.unlink(missing_ok=True)
         build(tmp)
         tmp.replace(target)
-        self.ledger[name] = spec
+        self.ledger[name] = recipe_hash
         self.ledger_path.write_text(json.dumps(self.ledger, indent=2))
         print(f"  built {name}")
         return target
@@ -386,7 +387,7 @@ def track_masks(clip: Clip, art: Artifacts, video: Path, objects: list[dict], ou
     art.ledger["track"] = {"seconds": seconds, "frames": frames, "objects": missing}
 
 
-def track_objects(spec: dict, folder: Path, clip_hash: str) -> list[dict]:
+def track_objects(spec: dict, folder: Path, clip_recipe_hash: str) -> list[dict]:
     """Each object's kind, its prompts in order, and the cache file named by everything that shapes its masks."""
     objects = []
     for i, obj in enumerate(spec["objects"]):
@@ -401,7 +402,9 @@ def track_objects(spec: dict, folder: Path, clip_hash: str) -> list[dict]:
         prompts = [first, *({"points": [], "avoid": [], **refine} for refine in obj.get("refine", []))]
         if not all(p["points"] or "box" in p for p in prompts):
             sys.exit(f"object {i}: every prompt needs points or a box")
-        key = hashlib.sha256(json.dumps([TRACK_VERSION, clip_hash, prompts], sort_keys=True).encode()).hexdigest()
+        key = hashlib.sha256(
+            json.dumps([TRACK_VERSION, clip_recipe_hash, prompts], sort_keys=True).encode()
+        ).hexdigest()
         objects.append({"kind": obj["kind"], "prompts": prompts, "cache": str(folder / "objects" / f"{key[:16]}.npz")})
     return objects
 
@@ -444,6 +447,8 @@ def sam_missing(venv: Path) -> str | None:
 
 # Keys in definitions() for a module's statements other than its definitions, and for all of its statements.
 INIT = "<init>"
+
+
 EVERYTHING = "*"
 
 
@@ -510,8 +515,8 @@ def model_code(script: Path, entry: str) -> str:
     def local(module: str | None) -> bool:
         return bool(module) and (script.parent / f"{module}.py").exists()
 
-    def reach(node: ast.AST, module: str, name: str) -> str:
-        """The node's text as reached by name, queueing what it refers to."""
+    def unparse_and_queue(node: ast.AST, module: str, name: str) -> str:
+        """The node's text as reached by name. Queues what it refers to on todo as a side effect."""
         if isinstance(node, ast.ImportFrom) and name not in (INIT, EVERYTHING):
             original = next(a.name for a in node.names if (a.asname or a.name) == name)
             todo.extend([(str(node.module), original)] if local(node.module) else [])
@@ -527,8 +532,12 @@ def model_code(script: Path, entry: str) -> str:
         attributes.update(attrs)
         return ast.unparse(node)
 
+    def methods_now_reached() -> list[tuple[str, str]]:
+        """Unvisited methods whose name the reached code reads as an attribute. Only known once todo runs dry."""
+        return [key for key in methods if key[1].split(".")[1] in attributes and key not in seen]
+
     todo = [(script.stem, entry)]
-    while todo := todo or [key for key in methods if key[1].split(".")[1] in attributes and key not in seen]:
+    while todo or (todo := methods_now_reached()):
         module, name = todo.pop()
         if (module, name) in seen:
             continue
@@ -538,7 +547,7 @@ def model_code(script: Path, entry: str) -> str:
             todo.append((module, INIT))
         found = [methods[module, name]] if (module, name) in methods else modules[module].get(name, [])
         if found:
-            reached[module, name] = "\n".join(reach(node, module, name) for node in found)
+            reached[module, name] = "\n".join(unparse_and_queue(node, module, name) for node in found)
     return hashlib.sha256(json.dumps(sorted(reached.items())).encode()).hexdigest()
 
 
@@ -602,7 +611,7 @@ def shape_of(clip: Clip, art: Artifacts, render: dict) -> str:
     return chosen["shape"]
 
 
-def with_shape(clip: Clip, art: Artifacts, source: Path, render: dict, objects: list[dict]) -> dict:
+def prepare_shape(clip: Clip, art: Artifacts, source: Path, render: dict, objects: list[dict]) -> dict:
     """The render spec without "shape", and with "matte" or "detail" set to the artifact that draws the mystery
     player, made first if its recipe changed. Without either, his mask in masks.npz draws him."""
     shape = shape_of(clip, art, render)
@@ -616,6 +625,7 @@ def with_shape(clip: Clip, art: Artifacts, source: Path, render: dict, objects: 
 
 def with_detail(clip: Clip, art: Artifacts, source: Path, render: dict, objects: list[dict]) -> dict:
     """The render spec with "detail" set to the clip's detail.npz, made first if its recipe changed."""
+    assert clip.track is not None, "only a tracked clip has a render spec"
     folder = art.folder
     mystery = render["mystery"][0]
     spec = {
@@ -623,7 +633,7 @@ def with_detail(clip: Clip, art: Artifacts, source: Path, render: dict, objects:
         "masks": str(folder / "masks.npz"),
         "mystery": mystery,
         "frames": render.get("frames"),
-        "refines": json.loads(clip.track or "{}")["objects"][mystery].get("detail", []),
+        "refines": clip.track["objects"][mystery].get("detail", []),
     }
     # Avoid points and seeds come from the other players' masks, so they are inputs too.
     players = [Path(obj["cache"]).name for obj in objects if obj["kind"] == "player"]
@@ -669,11 +679,11 @@ def with_matte(clip: Clip, art: Artifacts, source: Path, render: dict, objects: 
     return {**render, "matte": str(matte)}
 
 
-def drawn_by(art: Artifacts, drawn: str | None) -> list:
+def shape_inputs(art: Artifacts, shape_path: str | None) -> list:
     """What qc.json and silhouette.mp4 take from the matte.npz or detail.npz that draws the mystery player, if one
     does: its recipe, and the rules in matte.py and detail.py that qc.py and silhouette.py apply to it. The artifact
     holds only model output, so a change to those rules re-renders without re-running the model."""
-    return [art.ledger[Path(drawn).name], MATTE.read_text(), DETAIL.read_text()] if drawn else []
+    return [art.ledger[Path(shape_path).name], MATTE.read_text(), DETAIL.read_text()] if shape_path else []
 
 
 def silhouette(clip: Clip, masks: Path, render: dict, out: Path) -> None:
@@ -715,6 +725,8 @@ def contact_sheet(variants: dict[Path, float], out: Path) -> None:
 # Bagwork's render contract, copied from MAX_CLIP_BYTES, RENDER_TAGS and renderProblem in tools/bagwork/library.ts in
 # the private bagwork repo, which wins when the two disagree.
 MAX_RENDER_BYTES = 2_000_000
+
+
 RENDER_TAGS = {
     "major_brand": re.compile(r"[a-z0-9]{4}"),
     "minor_version": re.compile(r"\d+", re.ASCII),
@@ -788,7 +800,7 @@ def preview(clip: Clip) -> None:
     if not clip.track:
         sys.exit(f"{clip.id} has no track prompts to preview")
     art, _, video = normalized(clip)
-    objects = track_objects(json.loads(clip.track), art.folder, art.ledger["clip.mp4"])
+    objects = track_objects(clip.track, art.folder, art.ledger["clip.mp4"])
     out = art.folder / "preview"
     shutil.rmtree(out, ignore_errors=True)
     with sam_slot(clip, "preview") as slot:
@@ -802,7 +814,7 @@ def window(clip: Clip, frames: list[int], chosen: list[int]) -> None:
     if not clip.track:
         sys.exit(f"{clip.id} has no track prompts to window")
     art, _, video = normalized(clip)
-    objects = track_objects(json.loads(clip.track), art.folder, art.ledger["clip.mp4"])
+    objects = track_objects(clip.track, art.folder, art.ledger["clip.mp4"])
     if unknown := [i for i in chosen if not 0 <= i < len(objects)]:
         sys.exit(f"{clip.id} has objects 0 to {len(objects) - 1}, not {', '.join(map(str, unknown))}")
     spec = {"objects": objects, "window": {"objects": sorted(set(chosen)), "frames": frames}}
@@ -858,7 +870,7 @@ def crops(clip: Clip, frames: list[int], box: list[int] | None, detail: bool) ->
     current = masks.exists() and masks.stat().st_mtime >= video.stat().st_mtime
     if masks.exists() and not current:
         print(f"  masks.npz predates clip.mp4, so no drawn ball; build {clip.id} to place it")
-    spec = json.loads(clip.track) if clip.track else {}
+    spec = clip.track or {}
     keys = spec.get("ball_keys", [])
     sheet = {"frames": frames, "box": box, "ball_keys": keys, "masks": str(masks) if current else None, "detail": None}
     if detail:
@@ -887,10 +899,10 @@ def review(clip: Clip) -> None:
     if not build([clip]):
         sys.exit(1)
     art, source, video = normalized(clip)
-    spec = json.loads(clip.track)
+    spec = clip.track
     render = render_spec(clip, spec, window_seconds(clip, source))
     objects = track_objects(spec, art.folder, art.ledger["clip.mp4"])
-    render = with_shape(clip, art, source, render, objects)
+    render = prepare_shape(clip, art, source, render, objects)
     flags = json.loads((art.folder / "qc.json").read_text())["flags"]
     venv_step(clip, REVIEW, video, {"render": render, "flags": flags}, art.folder)
 
@@ -916,7 +928,7 @@ def build(clips: list[Clip]) -> bool:
                 lambda out, chain=chain: encode(source, out, chain, audio=False),
             )
         if clip.track:
-            spec = json.loads(clip.track)
+            spec = clip.track
             render = render_spec(clip, spec, expected)
             if "frames" in render:
                 trimmed["silhouette.mp4"] = (render["frames"][1] - render["frames"][0]) / FPS
@@ -927,15 +939,15 @@ def build(clips: list[Clip]) -> bool:
                 [[obj["kind"], Path(obj["cache"]).name] for obj in objects],
                 lambda out: track_masks(clip, art, outputs["clip.mp4"], objects, out),
             )
-            render = with_shape(clip, art, source, render, objects)
-            drawn = next((render[k] for k in ("matte", "detail") if k in render), None)
-            shaped = drawn_by(art, drawn)
+            render = prepare_shape(clip, art, source, render, objects)
+            shape_path = next((render[k] for k in ("matte", "detail") if k in render), None)
+            shaped = shape_inputs(art, shape_path)
             qc = art.make(
                 "qc.json",
                 [QC.read_text(), SILHOUETTE.read_text(), render["mystery"], art.ledger["masks.npz"], *shaped],
                 lambda out: run(
                     [str(sam_python(clip)), str(QC), str(masks), json.dumps(render["mystery"]), str(out)]
-                    + ([drawn] if drawn else [])
+                    + ([shape_path] if shape_path else [])
                 ),
             )
             for f in json.loads(qc.read_text())["flags"]:
